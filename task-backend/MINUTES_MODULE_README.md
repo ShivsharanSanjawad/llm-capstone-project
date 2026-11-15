@@ -103,3 +103,44 @@ The Meetings screen sorts valid meeting dates/times newest first. Saved minutes 
 
 
 Targeted workspace update verification: **89 backend tests and 18 frontend tests passed; the TypeScript/Vite production build passed.** Tests reopened generated PDF/XLSX files and verified contents, long task-table wrapping, formula safety, selected-meeting assistant isolation, sorting/filter/navigation behavior and browser download-handler logic. Browser handling used the frontend test environment; a manual live-browser/Atlas workflow was not performed for this update.
+
+
+## Local audio meeting upload
+
+The New meeting dialog accepts MP3, WAV and M4A (50 MB / 30 minutes maximum), alongside existing TXT/JSON uploads. Speech recognition uses [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper), locally on CPU with INT8 and the multilingual `base` model. No speech API key, paid speech service, GPU or separate FFmpeg installation is required. The first use downloads model weights; subsequent runs reuse the local cache. Recording quality and language affect recognition accuracy, so review the transcript.
+
+From the project root, update the existing virtual environment and start the combined app:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r task-backend/requirements.txt
+cd task-backend
+..\.venv\Scripts\python.exe -m uvicorn combined_app:app --reload --host 127.0.0.1 --port 8000
+```
+
+Keep the existing Atlas and LLM configuration in the same `task-backend/.env`. There is no second env file. Optional `AUDIO_WHISPER_MODEL=small` trades speed/memory for accuracy; `base` is the default. It can also point to a local Faster-Whisper/CTranslate2 model directory for offline use. Internet is needed for the initial model download unless weights are already cached. Existing LLM minutes generation still needs its configured provider; local speech recognition is the free component. Use one backend worker for the local demo; one transcription per process runs at a time and additional requests receive 429 instead of exhausting CPU/memory.
+
+To preload the default model before a demo, run from the project root:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
+```
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/meetings/transcribe` | Multipart `file` upload; returns unsaved `{transcript, language, duration_seconds, speaker_mode}` for review. No LLM or database write. |
+| POST | `/api/meetings/process` | Existing API receives reviewed timestamped entries with speaker names and `processing.source=audio`; saves the existing meeting document and performs task/dependency processing. |
+| POST | `/api/v1/minutes/generate/{meeting_id}` | Existing minutes generation and persistence; the frontend then opens the existing meeting-details page. |
+
+Test transcription directly while the backend is running:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/meetings/transcribe -F "file=@C:/path/to/meeting.mp3"
+```
+
+In the frontend: Meetings -> New meeting -> choose audio -> wait for transcription -> play/review text -> rename Speaker 1/2 or add more labels -> assign each segment (or leave Unknown) -> Process meeting. No automatic diarization or identity inference is performed. Speaker turns can be corrected by adding/removing segments and editing their text. Added segments have unknown timestamps rather than fabricated times. The participant list remains manually entered. Existing partial-failure handling opens the saved meeting so enrichment/minutes can be continued without re-transcribing.
+
+Only reviewed transcript entries and generated results are persisted using existing collections and schemas. The raw audio is temporary during upload/transcription and available in the browser for review; it is not archived in Atlas. Temporary uploads close after success or failure. Corrupt/empty/unsupported/overlong/oversized audio, no detected speech, unavailable model downloads and busy transcription return actionable errors. Logs record counts/duration, not transcript/audio contents.
+
+Audio update verification: real CPU Whisper recognition through the HTTP upload endpoint succeeded for WAV, MP3 and M4A using a 12.72-second synthetic meeting; all kept speaker identities null. Backend regression tests cover decoding/limits/errors and the existing save -> minutes -> query -> PDF/XLSX flow with database/provider substitutes. Frontend tests cover multipart upload, speaker correction, manual turns, loading/failure states and navigation. No live Atlas/provider meeting generation or manual browser session was performed for this update.
+
+Final audio update checks: **99 backend tests and 23 frontend tests passed; TypeScript and the Vite production build passed.** The existing bundle-size warning remains.

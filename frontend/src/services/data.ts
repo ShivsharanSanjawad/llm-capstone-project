@@ -42,7 +42,7 @@ export function parseTranscriptFile(text: string, name: string): ProcessInput {
   if (name.toLowerCase().endsWith('.txt')) return { transcript_text: text };
   if (!name.toLowerCase().endsWith('.json'))
     throw new Error(
-      'Choose a .txt or .json transcript. Audio transcription is unavailable.'
+      'Choose a .txt or .json transcript, or upload MP3, WAV or M4A meeting audio.'
     );
   let data: unknown;
   try {

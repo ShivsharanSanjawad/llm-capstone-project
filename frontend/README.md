@@ -23,3 +23,8 @@ The Meeting Assistant keeps the selected-meeting dropdown and existing POST /api
 
 
 Targeted workspace update verification: **89 backend tests and 18 frontend tests passed; the TypeScript/Vite production build passed.** Tests reopened generated PDF/XLSX files and verified contents, long task-table wrapping, formula safety, selected-meeting assistant isolation, sorting/filter/navigation behavior and browser download-handler logic. Browser handling used the frontend test environment; a manual live-browser/Atlas workflow was not performed for this update.
+
+
+Audio meetings use the existing New meeting dialog: upload MP3/WAV/M4A (50 MB and 30 minutes maximum), wait for local transcription, listen and correct text, rename/assign speaker labels, then Process meeting. Unknown speakers stay unassigned. Add a segment if multiple speaker turns occur within one block; new timestamps stay unknown. The existing meeting details, tasks, dependencies, assistant and exports are reused. Audio upload calls only the new `POST /api/meetings/transcribe` multipart endpoint; reviewed entries then use the existing process and minutes-generation APIs. No speech API key goes in the frontend. Initial model download and backend setup are documented in [the backend guide](../task-backend/MINUTES_MODULE_README.md#local-audio-meeting-upload). Raw audio is not archived; saved transcript/results use the existing database.
+
+Final audio update checks: **99 backend tests and 23 frontend tests passed; TypeScript and the Vite production build passed.** The existing bundle-size warning remains.

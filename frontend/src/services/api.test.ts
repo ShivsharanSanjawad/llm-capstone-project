@@ -137,3 +137,51 @@ it('downloads the selected XLSX using its server filename and revokes the blob U
     else Reflect.deleteProperty(URL, 'revokeObjectURL');
   }
 });
+
+it('uploads multipart audio without overriding the browser boundary', async () => {
+  const fetch = vi.fn().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        transcript: [
+          {
+            text: 'Hello',
+            speaker: null,
+            timestamp: '00:00:01',
+            source: 'audio',
+          },
+        ],
+        speaker_mode: 'manual',
+      }),
+      { headers: { 'content-type': 'application/json' } }
+    )
+  );
+  vi.stubGlobal('fetch', fetch);
+  const file = new File(['audio'], 'meeting.mp3', { type: 'audio/mpeg' });
+  const result = await api.transcribe(file);
+  expect(result.transcript[0].speaker).toBeNull();
+  expect(fetch.mock.calls[0][0]).toContain('/api/meetings/transcribe');
+  const options = fetch.mock.calls[0][1];
+  expect(options.body).toBeInstanceOf(FormData);
+  expect(options.body.get('file')).toBe(file);
+  expect(options.headers['Content-Type']).toBeUndefined();
+});
+
+it('shows an actionable audio error without starting meeting processing', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: 'audio_no_speech',
+            message: 'No speech was detected.',
+          },
+        }),
+        { status: 422 }
+      )
+    )
+  );
+  await expect(api.transcribe(new File([''], 'silent.wav'))).rejects.toThrow(
+    'No speech was detected.'
+  );
+});

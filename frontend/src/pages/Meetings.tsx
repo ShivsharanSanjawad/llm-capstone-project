@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, X, Upload, Check, LoaderCircle } from 'lucide-react';
 import { api, ApiError, errorMessage } from '../services/api';
 import { parseTranscriptFile, sortMeetings } from '../services/data';
-import type { ProcessInput, MeetingDoc } from '../types';
+import type { ProcessInput, MeetingDoc, Entry } from '../types';
 import {
   PageTitle,
   useLoad,
@@ -108,6 +108,10 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
   const [text, setText] = useState('');
   const [uploaded, setUploaded] = useState<ProcessInput>();
   const [fileName, setFileName] = useState('');
+  const [audioEntries, setAudioEntries] = useState<Entry[]>([]);
+  const [speakerNames, setSpeakerNames] = useState(['Speaker 1', 'Speaker 2']);
+  const [audioUrl, setAudioUrl] = useState('');
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState('');
   const [stage, setStage] = useState(0);
   const [meetingId, setMeetingId] = useState('');
@@ -115,13 +119,33 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
-  const busy = stage > 0 && stage < 3;
+  useEffect(
+    () => () => {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    },
+    [audioUrl]
+  );
+  const busy = transcribing || (stage > 0 && stage < 3);
   async function upload(file?: File) {
     setError('');
     setUploaded(undefined);
     setFileName('');
+    setAudioEntries([]);
+    setAudioUrl('');
+    setText('');
     if (!file) return;
     try {
+      if (/\.(mp3|wav|m4a)$/i.test(file.name)) {
+        if (file.size > 50 * 1024 * 1024)
+          throw new Error('Choose audio smaller than 50 MB.');
+        setTranscribing(true);
+        const result = await api.transcribe(file);
+        setAudioEntries(result.transcript);
+        setSpeakerNames(['Speaker 1', 'Speaker 2']);
+        setAudioUrl(URL.createObjectURL(file));
+        setFileName(file.name);
+        return;
+      }
       if (file.size > 4_000_000)
         throw new Error('Choose a transcript smaller than 4 MB.');
       const input = parseTranscriptFile(await file.text(), file.name);
@@ -133,13 +157,23 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
         setPeople(input.meeting.participants.join(', '));
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      setTranscribing(false);
     }
   }
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError('');
-    if (!text.trim() && !uploaded) {
-      setError('Paste a transcript or upload a valid text/JSON file.');
+    if (busy) return;
+    if (
+      audioEntries.length &&
+      audioEntries.some((entry) => !entry.text.trim())
+    ) {
+      setError('Remove empty segments or enter their transcript text.');
+      return;
+    }
+    if (!text.trim() && !uploaded && !audioEntries.length) {
+      setError('Paste a transcript or upload a text, JSON or audio file.');
       return;
     }
     setStage(1);
@@ -150,6 +184,22 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
         ...(uploaded || {}),
         ...(text.trim()
           ? { transcript_text: text, transcript: undefined }
+          : {}),
+        ...(audioEntries.length
+          ? {
+              transcript: audioEntries.map((entry) => ({
+                ...entry,
+                text: entry.text.trim(),
+                speaker: entry.speaker
+                  ? speakerNames[
+                      Number(entry.speaker.replace('speaker-', ''))
+                    ]?.trim() ||
+                    `Speaker ${Number(entry.speaker.replace('speaker-', '')) + 1}`
+                  : null,
+              })),
+              transcript_text: undefined,
+              processing: { source: 'audio' },
+            }
           : {}),
         meeting: {
           ...uploaded?.meeting,
@@ -235,20 +285,145 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
         </div>
         <label className="upload-box">
           <Upload size={23} />
-          <strong>{fileName || 'Upload a transcript'}</strong>
-          <span>Text (.txt) or timestamped JSON ? up to 4 MB</span>
+          <strong>{fileName || 'Upload a transcript or meeting audio'}</strong>
+          <span>
+            TXT/JSON up to 4 MB; MP3/WAV/M4A up to 50 MB and 30 minutes
+          </span>
           <input
             aria-label="Upload transcript"
             type="file"
-            accept=".txt,.json"
-            onChange={(e) => void upload(e.target.files?.[0])}
+            accept=".txt,.json,.mp3,.wav,.m4a"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (file) void upload(file);
+            }}
             disabled={busy}
           />
         </label>
-        <p className="muted small">
-          Audio upload is unavailable: this backend has no speech-to-text
-          endpoint. Use a transcript or the Chrome extension.
-        </p>
+        {transcribing && (
+          <Loading text="Transcribing audio locally. The first run downloads the model; please keep this window open." />
+        )}
+        {!!audioEntries.length && (
+          <section aria-label="Review audio transcript">
+            <h3>Review transcript and speakers</h3>
+            <p className="muted small">
+              Automatic speaker detection is unavailable. Listen and assign
+              labels only when known; Unknown is allowed. Speaker names are
+              manual labels, not verified identities. Correct recognition errors
+              before generating. If speakers change inside one block, add a
+              segment and move the relevant text; its timestamp stays unknown.
+            </p>
+            <audio
+              controls
+              src={audioUrl}
+              aria-label="Uploaded meeting audio"
+            />
+            <div className="two-column">
+              {speakerNames.map((name, index) => (
+                <label key={index}>
+                  Name for Speaker {index + 1}
+                  <input
+                    value={name}
+                    maxLength={100}
+                    disabled={busy}
+                    onChange={(e) => {
+                      const names = [...speakerNames];
+                      names[index] = e.target.value;
+                      setSpeakerNames(names);
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={busy || speakerNames.length >= 20}
+              onClick={() =>
+                setSpeakerNames([
+                  ...speakerNames,
+                  `Speaker ${speakerNames.length + 1}`,
+                ])
+              }
+            >
+              Add speaker
+            </button>
+            {audioEntries.map((entry, index) => (
+              <div className="review-box" key={index}>
+                <label>
+                  Speaker for segment {index + 1} (
+                  {entry.timestamp || 'time not recorded'})
+                  <select
+                    disabled={busy}
+                    value={entry.speaker || ''}
+                    onChange={(e) =>
+                      setAudioEntries((entries) =>
+                        entries.map((item, i) =>
+                          i === index
+                            ? { ...item, speaker: e.target.value || null }
+                            : item
+                        )
+                      )
+                    }
+                  >
+                    <option value="">Unknown / unassigned</option>
+                    {speakerNames.map((name, i) => (
+                      <option key={i} value={`speaker-${i}`}>
+                        {name.trim() || `Speaker ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Transcript segment {index + 1}
+                  <textarea
+                    rows={3}
+                    required
+                    maxLength={10000}
+                    disabled={busy}
+                    value={entry.text}
+                    onChange={(e) =>
+                      setAudioEntries((entries) =>
+                        entries.map((item, i) =>
+                          i === index ? { ...item, text: e.target.value } : item
+                        )
+                      )
+                    }
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    setAudioEntries((entries) => [
+                      ...entries.slice(0, index + 1),
+                      {
+                        text: '',
+                        timestamp: null,
+                        speaker: null,
+                        source: 'audio',
+                      },
+                      ...entries.slice(index + 1),
+                    ])
+                  }
+                >
+                  Add segment after {index + 1}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    setAudioEntries((entries) =>
+                      entries.filter((_, i) => i !== index)
+                    )
+                  }
+                >
+                  Remove segment {index + 1}
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
         <label>
           Or paste transcript
           <textarea
@@ -261,6 +436,8 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
               if (e.target.value) {
                 setUploaded(undefined);
                 setFileName('');
+                setAudioEntries([]);
+                setAudioUrl('');
               }
             }}
             disabled={busy}

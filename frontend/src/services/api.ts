@@ -8,6 +8,7 @@ import type {
   Health,
   TaskStatus,
   QueryAnswer,
+  Entry,
 } from '../types';
 const base = (
   import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
@@ -80,7 +81,12 @@ async function request<T>(
     const response = await fetch(base + path, {
       ...options,
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers: {
+        ...(options.body instanceof FormData
+          ? {}
+          : { 'Content-Type': 'application/json' }),
+        ...options.headers,
+      },
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -92,6 +98,14 @@ async function request<T>(
       const code = String(object.code || '');
       const message =
         messages[code] ||
+        (code.startsWith('audio_') ||
+        code === 'unsupported_audio' ||
+        code === 'invalid_audio' ||
+        code === 'empty_audio'
+          ? typeof object.message === 'string'
+            ? object.message
+            : undefined
+          : undefined) ||
         (Array.isArray(detail)
           ? 'Please check the request fields.'
           : typeof detail === 'string'
@@ -144,6 +158,16 @@ const post = <T>(path: string, body?: unknown) =>
   );
 const id = encodeURIComponent;
 export const api = {
+  transcribe: (file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return request<{
+      transcript: Entry[];
+      language: string;
+      duration_seconds: number;
+      speaker_mode: 'manual';
+    }>('/api/meetings/transcribe', { method: 'POST', body }, 1800000);
+  },
   deleteMeeting: (meetingId: string) =>
     request<{ status: string; meeting_id: string }>(
       '/api/meetings/' + id(meetingId),
