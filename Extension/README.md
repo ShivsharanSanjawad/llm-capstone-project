@@ -11,6 +11,7 @@ This folder contains the browser extension for **Meeting Minutes & Task Intellig
 - Direct visualization of:
   - Factual extraction results with the meeting title and explicit task descriptions.
   - Optional contextual analysis with priorities, assignees, and deadlines.
+  - Direct and indirect circular-dependency checks, with transcript evidence for each detected dependency edge.
   - Schedule feasibility checks and bottlenecks from the graph engine.
 - Configurable backend endpoint with built-in connection testing.
 
@@ -22,7 +23,7 @@ This folder contains the browser extension for **Meeting Minutes & Task Intellig
 4. Click the extension action in the toolbar to open the side panel.
 5. Click **Start meeting** to capture live speech.
 6. When finished, click **Extract tasks** to display explicitly stated tasks.
-7. Click **Analyze more** to run contextual inference and graph analysis. If extraction has not run for the current transcript, the extension extracts it first automatically.
+7. Click **Analyze more** to run contextual inference and graph analysis. It checks the complete dependency graph for direct and indirect cycles and displays supporting transcript statements for each cycle edge. If extraction has not run for the current transcript, the extension extracts it first automatically.
 
 ## Settings & Backend Contract
 

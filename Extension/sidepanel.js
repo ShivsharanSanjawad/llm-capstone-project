@@ -600,6 +600,7 @@ function renderAnalysisResults(result) {
   const isFeasible = graph.is_feasible !== false;
   const bottlenecks = graph.bottlenecks || [];
   const circular = graph.circular_dependencies || [];
+  const cycleDetails = graph.cycle_details || [];
   const initialCycles = graph.initial_circular_dependencies || [];
   const resolutions = graph.resolved_dependencies || [];
   const hasResolution = initialCycles.length > 0 && resolutions.length > 0;
@@ -616,7 +617,7 @@ function renderAnalysisResults(result) {
         ${initialCycles.map((cycle) => `
           <li>
             <strong>${escapeHtml(cycle.from_task_id || "Task")} ➔ ${escapeHtml(cycle.to_task_id || "Task")}</strong>
-            ${cycle.description ? `<span>${escapeHtml(cycle.description)}</span>` : ""}
+            ${cycle.description ? `<span>Transcript evidence: ${escapeHtml(cycle.description)}</span>` : ""}
           </li>
         `).join("")}
       </ul>
@@ -640,7 +641,25 @@ function renderAnalysisResults(result) {
     ${isFeasible ? "✓ Schedule Feasible – No Circular Deadlocks" : "⚠ Infeasible – Circular Dependency Detected!"}
   </div>`;
 
-  if (circular.length) {
+  if (cycleDetails.length) {
+    gHtml += `<div class="cycle-history">
+      <strong>Detected cycles and supporting transcript statements</strong>
+      <ul class="cycle-list">
+        ${cycleDetails.map((cycle, index) => `
+          <li>
+            <strong>Cycle ${index + 1}: ${cycle.task_ids.map(escapeHtml).join(" ➔ ")}</strong>
+            <ul>
+              ${cycle.dependencies.map((dependency) => `
+                <li>${escapeHtml(dependency.prerequisite_task_id)} ➔ ${escapeHtml(dependency.task_id)}:
+                  ${dependency.evidence ? `“${escapeHtml(dependency.evidence)}”` : "No transcript evidence was returned for this dependency."}
+                </li>
+              `).join("")}
+            </ul>
+          </li>
+        `).join("")}
+      </ul>
+    </div>`;
+  } else if (circular.length) {
     gHtml += `<p style="font-size:12px;color:#b91c1c;margin:4px 0"><strong>Cycle:</strong>
       ${circular.map((c) => `${escapeHtml(c.from)} ➔ ${escapeHtml(c.to)}`).join(", ")}</p>`;
   }

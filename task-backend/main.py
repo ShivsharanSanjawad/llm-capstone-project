@@ -13,6 +13,12 @@ from bson import ObjectId
 
 from models import FactualExtraction, ContextualInference
 from graph_engine import analyze_task_graph
+from database import database
+from minutes_module.config import Settings
+from minutes_module.llm_service import LLMService
+
+settings = Settings.load()
+llm_service = LLMService(settings)
 
 # ---------------------------------------------------------------------------
 # Configuration & Environment
@@ -142,11 +148,11 @@ async def get_meeting_doc(meeting_id: str) -> Optional[Dict[str, Any]]:
     store = read_local_storage()
     return store.get(str(meeting_id))
 
-async def list_meetings_docs(limit: int = 50) -> List[Dict[str, Any]]:
+async def list_meetings_docs(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     global db_mode, tasks_collection
     if db_mode == "mongodb" and tasks_collection is not None:
         try:
-            cursor = tasks_collection.find().sort("_id", -1).limit(limit)
+            cursor = tasks_collection.find().sort("_id", -1).skip(offset).limit(limit)
             meetings = []
             async for doc in cursor:
                 doc["_id"] = str(doc["_id"])
@@ -156,7 +162,8 @@ async def list_meetings_docs(limit: int = 50) -> List[Dict[str, Any]]:
             print(f"[Database] MongoDB list error: {e}. Checking local storage.")
     
     store = read_local_storage()
-    return list(store.values())[:limit]
+    meetings = list(store.values())
+    return meetings[offset:offset + limit]
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -189,6 +196,11 @@ async def lifespan(app: FastAPI):
         db_mode = "local"
         init_local_storage()
         print(f"[Database] MONGODB_URL not set. Using local JSON storage ({LOCAL_STORAGE_FILE}).")
+    if MONGODB_URL:
+        try:
+            await database.connect()
+        except RuntimeError as e:
+            print(f"[Database] Shared database connection failed ({e}).")
     print("=" * 60)
 
     yield
@@ -196,6 +208,7 @@ async def lifespan(app: FastAPI):
     if mongo_client:
         mongo_client.close()
         print("[Database] MongoDB connection closed.")
+    database.close()
 
 # ---------------------------------------------------------------------------
 # FastAPI Application & CORS
@@ -384,15 +397,22 @@ async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dic
     system_prompt = (
         "You are an AI project manager. You are given a meeting transcript and a strictly factual list of extracted tasks. "
         "Your job is to enrich these tasks by inferring missing context. Assign priorities, flag missing owners/deadlines, "
-        "deduce current statuses, and suggest inferred dependencies (tasks that logically must happen first, even if not explicitly stated). "
+        "deduce current statuses, and identify every direct and indirect dependency expressed explicitly or conversationally, "
+        "including dependencies implied by sequencing, handoffs, conditions, and temporary workarounds. "
+        "For every dependency between tracked tasks, add the prerequisite task ID to the dependent task's explicit_prerequisites "
+        "or inferred_prerequisites and add a dependency_evidence record with prerequisite_task_id, task_id (the dependent task), "
+        "and evidence containing the exact supporting transcript statement. Do not invent evidence or omit a dependency because a workaround is proposed. "
+        "Then validate the complete task dependency graph for all direct and indirect cycles before declaring it feasible. "
+        "For every cycle, add each dependency edge to initial_circular_dependencies with from_task_id set to the prerequisite, "
+        "to_task_id set to the dependent task, and description containing the exact transcript statement proving that edge. "
+        "Include task IDs and evidence for indirect cycles as well. "
         "CRITICAL PREREQUISITE RULE: If a task is blocked by an external factor, event, or third-party action that is not tracked as a separate "
         "task ID (e.g., waiting on AWS support, client approvals, or external deliveries), you MUST add a clear descriptive string of this blocker "
         "into the explicit_prerequisites or inferred_prerequisites list (e.g., 'Waiting on AWS support to approve quota'). "
         "Do not leave prerequisites empty if an external blocker exists. Make sure all tasks keep their exact task_id. "
-        "Also analyze the conversation for circular dependencies discussed before a resolution: if both tasks explicitly "
-        "or clearly stated that each depended on the other's output, add them to initial_circular_dependencies with "
-        "from_task_id, to_task_id, and description. If the meeting agrees on an ordering or handoff that resolves it, "
-        "add a clear resolution to resolved_dependencies; include task IDs and the agreed execution sequence."
+        "Represent the current execution plan in each task's prerequisite lists. If the meeting agrees on an ordering or handoff "
+        "that resolves an earlier cycle, add a clear resolution to resolved_dependencies with task IDs and the agreed sequence; "
+        "still preserve the original cycle and its transcript evidence in initial_circular_dependencies."
     )
     user_prompt = f"Transcript:\n{transcript_text}\n\nFactual Tasks:\n{factual_tasks}"
 
