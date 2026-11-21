@@ -1,6 +1,12 @@
 # Meeting Minutes & Task Intelligence System
 
-An end-to-end meeting intelligence pipeline that captures live meeting transcripts from a Chrome Extension, extracts factual tasks using LLMs, infers contextual deadlines and dependencies, validates schedule feasibility, and identifies blockers and bottlenecks using graph algorithms.
+An end-to-end meeting intelligence system that captures live transcripts through a Chrome Extension or accepts uploaded and pasted transcripts through a React website. It extracts factual action items, infers contextual task details, analyzes dependencies and blockers, generates evidence-linked meeting minutes, and supports human review, approval, revision history, PDF/Excel/DOCX export, meeting Q&A, and LLM monitoring.
+
+## Live Deployment
+
+- **Web app:** https://vizura-frontend.vercel.app/
+- **Backend API:** https://vizura-backend.vercel.app/ (health check at `/`, Swagger at `/docs`)
+- **Chrome extension:** load the `Extension/` folder as an unpacked extension; it is configured to use the deployed backend by default.
 
 ---
 
@@ -36,52 +42,127 @@ graph LR
 
 ### 1. Environment Setup
 
-Create `.env` in the project root or `task-backend/` (or copy from `.env.example`):
+Use **Python 3.11+**, **Node.js 22.12+**, a MongoDB Atlas database user, and an API key for one supported provider. Allow your current IP in Atlas Network Access and give the database user appropriate read/write permissions.
+
+From the project root, create one Python environment and install the authoritative backend dependency file:
+
+```powershell
+# Skip environment creation if the root .venv already exists.
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r task-backend\requirements.txt
+
+# Create the configuration file only if it does not already exist.
+if (!(Test-Path task-backend\.env)) {
+    Copy-Item task-backend\.env.example task-backend\.env
+}
+```
+
+Configure **only `task-backend/.env`**. Example using Groq:
 
 ```env
-# LLM Providers (Configure at least one)
-GEMINI_API_KEY=your_gemini_key_here
+# MongoDB Atlas is required; replace the placeholders.
+MONGODB_URL=mongodb+srv://YOUR_USER:YOUR_ENCODED_PASSWORD@YOUR_CLUSTER.mongodb.net/?retryWrites=true&w=majority
+MONGODB_DATABASE=meeting_db
+
+# Fill one provider key. Keep unused provider keys blank.
+GEMINI_API_KEY=
 GROQ_API_KEY=your_groq_key_here
-OPENAI_API_KEY=your_openai_key_here
+OPENAI_API_KEY=
 
-# MongoDB Atlas URL (leave blank for automatic local storage fallback)
-MONGODB_URL=
+MINUTES_LLM_PROVIDER=groq
+MINUTES_LLM_MODEL=openai/gpt-oss-20b
+LLM_MODEL=
 
-# Server Configuration
+MINUTES_ENABLE_VERIFICATION=true
+MINUTES_STORAGE_MODE=mongodb
+MINUTES_REQUESTS_PER_MINUTE=20
+MINUTES_TOKENS_PER_MINUTE=8000
+MINUTES_MAX_CONCURRENCY=1
+
+FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 HOST=127.0.0.1
 PORT=8000
 ```
 
+Use a model available to your provider account and set RPM/TPM at or below its actual account/model limits. The scheduler defaults are not a guarantee of your account's quota. URL-encode special characters in the Atlas password.
+
+For Gemini, fill `GEMINI_API_KEY`, set provider to `gemini`, and choose a compatible Gemini model. For OpenAI, fill `OPENAI_API_KEY`, set provider to `openai`, and choose a compatible chat-completions model. Explicit provider selection takes precedence; otherwise the first configured key is selected in Gemini, Groq, OpenAI order. Model selection is `MINUTES_LLM_MODEL`, then `LLM_MODEL`, then the provider default.
+
+The backend reads only `task-backend/.env`; root `.env` and example files are not loaded. Process environment variables take precedence. Restart the backend after configuration changes. Keep `.env`, API keys, Atlas credentials and `.venv/` out of Git.
+
 ### 2. Start the Backend
 
-From the project root:
+In terminal one, from the project root:
 
-```bash
-# Using the local virtual environment
-.venv\Scripts\python task-backend\main.py
-```
-
-Or using `uvicorn`:
-
-```bash
+```powershell
+.\.venv\Scripts\Activate.ps1
 cd task-backend
-..\.venv\Scripts\uvicorn main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn combined_app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Verify backend health at: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+Or invoke the shared environment's Python directly without activation:
 
-### 3. Load the Chrome Extension
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn combined_app:app --app-dir task-backend --reload --host 127.0.0.1 --port 8000
+```
 
-1. Open Chrome or Edge and navigate to `chrome://extensions`.
-2. Enable **Developer mode** (toggle in upper right).
-3. Click **Load unpacked** and select the `Extension` directory.
-4. Click the extension icon in your browser toolbar to open the side panel.
-5. Enter a title and participants, click **Start meeting**, and speak into your microphone.
-6. Click **Process with Backend** to extract tasks and analyze the dependency graph!
+Start only one backend on port 8000. Use `combined_app:app` for the complete website and extension API, rather than starting separate `main.py` and `main2.py` servers.
 
-----
+Verify backend health at [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) and minutes configuration at [http://127.0.0.1:8000/api/v1/minutes/health](http://127.0.0.1:8000/api/v1/minutes/health). A configured key does not prove provider authentication or quota; generation exercises those. Startup fails if Atlas cannot connect.
+
+Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+
+### 3. Start the Web Frontend
+
+In terminal two, from the project root:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173). No frontend env file is required for this local setup: the API client defaults to `http://127.0.0.1:8000`. If your backend is elsewhere, optionally set `VITE_API_BASE_URL` in `frontend/.env.local` and restart Vite. Never put provider keys or database credentials in frontend variables.
+
+1. Choose **New meeting**, enter metadata and paste or upload a transcript. `task-backend/minutes_sample_request.json` provides a sample payload.
+2. Submit once: the frontend calls meeting processing, obtains the stored meeting ID, then calls minutes generation for that ID.
+3. Inspect the meeting tabs, edit draft minutes, review evidence/flags, enter a reviewer name and approve. Reviewer names are audit labels, not authenticated identities.
+4. Download PDF/Excel/DOCX, update task statuses, inspect dependencies and ask the assistant about the selected meeting.
+5. If enrichment or minutes generation fails, open the saved meeting and retry that stage instead of submitting another copy.
+6. Use **Delete** in the Meetings list only when you want to permanently remove the meeting and its associated saved records, including approved minutes. Download needed reports first and avoid deletion while generation is running.
+
+### 4. Load the Chrome Extension
+
+1. Open Chrome at `chrome://extensions` or Edge at `edge://extensions`.
+2. Enable **Developer mode**, click **Load unpacked**, and select the `Extension/` directory.
+3. Open the extension side panel and confirm the processing endpoint in its settings is `http://127.0.0.1:8000/api/meetings/process`.
+4. Enter the meeting title and participants, then select a capture mode. For Google Meet, enable meeting captions and select **Google Meet Captions** in the extension.
+5. Click **Start recording**, capture the conversation, and stop when finished. Microphone mode captures your voice; available capture behavior depends on browser permissions and support.
+6. Click **Process with Backend** to extract tasks and analyze dependencies.
+7. Open the website to view the saved meeting and generate its minutes if needed. The website also works without the extension running.
+
+### 5. Verify and Test
+
+From the project root, run the offline backend suite and frontend checks:
+
+```powershell
+.\.venv\Scripts\python.exe -B -m pytest task-backend\tests_minutes -q -p no:cacheprovider
+npm --prefix frontend run test
+npm --prefix frontend run build
+```
+
+Backend tests mock provider and MongoDB calls; they do not verify your real quota, credentials or Atlas transaction permissions. Test the live workflow through the website or Swagger: process a transcript, generate minutes, edit/approve, export, change a task status, ask a question, inspect monitoring and refresh saved data.
+
+Use the `meeting_id` returned by processing; it can differ from the transcript payload's original metadata ID. Before minutes exist, a minutes lookup can legitimately return 404. Exports require an approved revision unless `draft=true` is explicitly requested. Generation errors include a safe `detail.code` and available diagnostics; do not repeatedly resubmit a whole meeting to retry a failed later stage.
+
+Detailed troubleshooting: [RUN_AND_TEST.md](RUN_AND_TEST.md). Backend optimization and monitoring notes: [MINUTES_MODULE_README.md](task-backend/MINUTES_MODULE_README.md).
+
+---
 
 ## API Endpoints
+
+All paths below are exposed by `combined_app:app`. Meeting and minutes list endpoints accept `offset` and `limit` pagination parameters. The minutes list path has no trailing slash.
 
 | Method | Endpoint | Description |
 |---|---|---|

@@ -1,0 +1,15 @@
+minutes_data/
+.minutes_venv/
+.minutes_test_tmp*/
+__pycache__/
+.pytest_cache/
+
+.env.local
+.env
+.vercel
+.env*
+
+# Secrets file named "env" (no dot) and local data backups
+env
+**/env
+factual_tasks_backup*.json

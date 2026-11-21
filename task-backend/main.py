@@ -1,6 +1,4 @@
 import os
-import json
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any, Type, TypeVar
@@ -212,10 +210,12 @@ app = FastAPI(
 # Enable CORS for Chrome Extensions and local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[v.strip() for v in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if v.strip()],
+    allow_origin_regex=r"chrome-extension://[a-p]{32}",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # ---------------------------------------------------------------------------
@@ -225,6 +225,7 @@ class TranscriptEntry(BaseModel):
     timestamp: Optional[str] = None
     text: str
     source: Optional[str] = None
+    speaker: Optional[str] = None
     at: Optional[str] = None
 
 class MeetingMetadata(BaseModel):
@@ -266,11 +267,13 @@ def extract_transcript_text(payload: MeetingProcessRequest) -> str:
     if isinstance(payload.transcript, list) and payload.transcript:
         lines = []
         for entry in payload.transcript:
-            speaker = getattr(entry, "source", None)
+            speaker = getattr(entry, "speaker", None)
             timestamp = getattr(entry, "timestamp", None)
             text = entry.text.strip() if hasattr(entry, "text") else str(entry).strip()
             if not text:
                 continue
+            if speaker:
+                text = f"{speaker}: {text}"
             if timestamp:
                 lines.append(f"[{timestamp}] {text}")
             else:
@@ -292,7 +295,7 @@ async def request_structured_completion(
 ) -> ModelT:
     if not llm_api_key:
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail="No LLM provider configured. Please set GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY in .env."
         )
 
@@ -405,11 +408,13 @@ async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dic
 @app.get("/")
 @app.get("/health")
 async def health_check():
+    connected = await database.healthy()
     return {
-        "status": "ok",
+        "status": "ok" if connected else "degraded",
         "message": "Meeting Minutes & Task Intelligence API is running",
         "llm_provider": llm_provider_name or "Not configured",
-        "database_mode": db_mode,
+        "database_mode": "mongodb",
+        "database_connected": connected,
         "endpoints": {
             "process_meeting": "POST /api/meetings/process",
             "extract_factual": "POST /api/v1/extract-factual",
@@ -434,6 +439,7 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
             detail="Transcript is empty. Speak or provide meeting transcript to process."
         )
 
+    meeting_id = None
     try:
         meeting_meta = payload.meeting.model_dump() if payload.meeting else {
             "title": "Untitled meeting",
@@ -449,9 +455,10 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
         # Initial Document Save
         meeting_doc = {
             "meeting_title": meeting_meta.get("title") or extracted_factual.meeting_title,
-            "date": extracted_factual.date or meeting_meta.get("startedAt") or datetime.now(timezone.utc).isoformat(),
+            "date": meeting_meta.get("startedAt") or extracted_factual.date or datetime.now(timezone.utc).isoformat(),
             "participants": meeting_meta.get("participants", []),
             "raw_transcript": raw_transcript,
+            "transcript": [e.model_dump() for e in payload.transcript] if isinstance(payload.transcript, list) else None,
             "tasks": factual_tasks_dict,
             "processing_metadata": payload.processing.model_dump() if payload.processing else None,
             "status": "factual_extracted",
@@ -487,11 +494,13 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
             "is_feasible": graph_analysis.get("is_feasible", True),
         }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Error] Processing failed: {type(e).__name__}: {repr(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        if meeting_id:
+            raise HTTPException(status_code=502, detail={"code":"task_processing_partial_failure", "meeting_id":meeting_id,
+                "message":"Factual tasks were saved. Retry contextual inference from the meeting detail page."}) from None
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail={"code":"task_processing_failed"}) from None
 
 # Modular Pass 1 Endpoint
 @app.post("/api/v1/extract-factual")
@@ -511,7 +520,7 @@ async def extract_factual_pass(payload: TranscriptInput):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code":"task_provider_error"}) from None
 
 # Modular Pass 2 Endpoint
 @app.post("/api/v1/infer-context/{meeting_id}")
@@ -549,12 +558,15 @@ async def infer_context_pass(meeting_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail={"code":"task_provider_error"}) from None
 
 # Meetings list and retrieval
 @app.get("/api/meetings")
-async def list_meetings():
-    meetings = await list_meetings_docs(limit=50)
+async def list_meetings(offset: int = 0, limit: int = 50):
+    from fastapi import HTTPException
+    if offset < 0 or not 1 <= limit <= 100:
+        raise HTTPException(422, detail={"code":"invalid_pagination"})
+    meetings = await list_meetings_docs(limit=limit, offset=offset)
     return {"meetings": meetings}
 
 @app.get("/api/meetings/{meeting_id}")
@@ -564,9 +576,13 @@ async def get_meeting(meeting_id: str):
         raise HTTPException(status_code=404, detail="Meeting not found")
     return meeting
 
+if __name__ != "__main__":
+    # Mount the minutes + workspace routers whenever the app is imported (uvicorn main:app, Vercel)
+    import combined_app  # noqa: E402,F401
+
 if __name__ == "__main__":
     import uvicorn
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
     print(f"Starting uvicorn server on http://{host}:{port}...")
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+    uvicorn.run("combined_app:app", host=host, port=port, reload=True)

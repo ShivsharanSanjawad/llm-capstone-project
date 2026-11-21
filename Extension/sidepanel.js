@@ -33,6 +33,10 @@ const state = {
   interimText: "",
   // Background port (for Google Meet captions relay)
   bgPort: null,
+  // Auto-detected participants and last processed meeting
+  participants: [],
+  meetingId: null,
+  minutesText: "",
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -97,6 +101,15 @@ function addEntry(text, timestamp) {
   renderTranscript();
 }
 
+// Auto-fill the Participants field with speaker names captured from Meet
+function addParticipant(name) {
+  const n = (name || "").trim();
+  if (!n || /^you$/i.test(n)) return;
+  if (state.participants.some((x) => x.toLowerCase() === n.toLowerCase())) return;
+  state.participants.push(n);
+  $("participantsDetected").textContent = `Participants: ${state.participants.join(", ")}`;
+}
+
 function updateOrAddTurnEntry(turnId, speaker, fullText) {
   const cleaned = (fullText || "").trim();
   if (!cleaned) return;
@@ -124,6 +137,7 @@ function updateOrAddTurnEntry(turnId, speaker, fullText) {
   }
 
   // 3. Brand new speaker turn!
+  addParticipant(speaker);
   state.entries.push({
     turnId: turnId || `turn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     speaker: speaker || "",
@@ -268,6 +282,11 @@ function connectToBackground() {
 function handleBackgroundMessage(msg) {
   if (!msg || !msg.type) return;
 
+  if (msg.type === "meet-participants" && Array.isArray(msg.names)) {
+    msg.names.forEach(addParticipant);
+    return;
+  }
+
   if (msg.type === "meet-caption" && state.isRecording && state.mode === MODE.GOOGLE_MEET) {
     updateOrAddTurnEntry(msg.turnId, msg.speaker, msg.text);
     // Restore recording banner if we had a disconnect warning
@@ -293,6 +312,9 @@ function handleBackgroundMessage(msg) {
   }
 
   if (msg.type === "meet-tab-detected") {
+    const t = (msg.title || "").replace(/^Meet\s*[-–]\s*/i, "").replace(/\s*[-–]\s*Google Meet$/i, "").trim();
+    const titleEl = $("meetingTitle");
+    if (t && !/^(meet|google meet)$/i.test(t) && !titleEl.value.trim()) titleEl.value = t;
     if (state.mode === MODE.NONE || state.mode === MODE.GOOGLE_MEET) {
       state.mode = MODE.GOOGLE_MEET;
       setModeButton(MODE.GOOGLE_MEET);
@@ -743,6 +765,8 @@ analyzeMoreButton.addEventListener("click", async () => {
 $("clearButton").addEventListener("click", () => {
   if (state.isRecording) return;
   state.entries = [];
+  state.participants = [];
+  $("participantsDetected").textContent = "Participants: auto-detected from Google Meet";
   renderTranscript();
 });
 
