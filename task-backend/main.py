@@ -3,14 +3,14 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Type, TypeVar
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+import httpx
 from bson import ObjectId
 
 from models import FactualExtraction, ContextualInference
@@ -36,28 +36,24 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LLM_MODEL = os.getenv("LLM_MODEL")
 
-llm_client: Optional[AsyncOpenAI] = None
+llm_api_key: Optional[str] = None
+llm_base_url: str = ""
 llm_model_name: str = ""
 llm_provider_name: str = ""
 
 if GEMINI_API_KEY:
-    llm_client = AsyncOpenAI(
-        api_key=GEMINI_API_KEY,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    )
+    llm_api_key = GEMINI_API_KEY
+    llm_base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
     llm_model_name = LLM_MODEL or "gemini-2.5-flash"
     llm_provider_name = f"Google Gemini ({llm_model_name})"
 elif GROQ_API_KEY:
-    llm_client = AsyncOpenAI(
-        api_key=GROQ_API_KEY,
-        base_url="https://api.groq.com/openai/v1",
-    )
-    llm_model_name = LLM_MODEL or "openai/gpt-oss-20b"
+    llm_api_key = GROQ_API_KEY
+    llm_base_url = "https://api.groq.com/openai/v1"
+    llm_model_name = LLM_MODEL or "openai/gpt-oss-120b"
     llm_provider_name = f"Groq ({llm_model_name})"
 elif OPENAI_API_KEY:
-    llm_client = AsyncOpenAI(
-        api_key=OPENAI_API_KEY,
-    )
+    llm_api_key = OPENAI_API_KEY
+    llm_base_url = "https://api.openai.com/v1"
     llm_model_name = LLM_MODEL or "gpt-4o-mini"
     llm_provider_name = f"OpenAI ({llm_model_name})"
 else:
@@ -173,7 +169,7 @@ async def lifespan(app: FastAPI):
     
     print("=" * 60)
     print("Meeting Task Intelligence Backend starting...")
-    if llm_client:
+    if llm_api_key:
         print(f"[LLM] Active Provider: {llm_provider_name}")
     else:
         print("[LLM] WARNING: No LLM provider configured.")
@@ -286,37 +282,102 @@ def extract_transcript_text(payload: MeetingProcessRequest) -> str:
 # ---------------------------------------------------------------------------
 # Helper: Run LLM Passes
 # ---------------------------------------------------------------------------
-async def run_factual_extraction(transcript_text: str) -> FactualExtraction:
-    if not llm_client:
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+async def request_structured_completion(
+    system_prompt: str,
+    user_prompt: str,
+    response_model: Type[ModelT],
+) -> ModelT:
+    if not llm_api_key:
         raise HTTPException(
             status_code=500,
             detail="No LLM provider configured. Please set GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY in .env."
         )
-    
-    completion = await llm_client.beta.chat.completions.parse(
-        model=llm_model_name,
-        messages=[
+
+    schema = json.dumps(response_model.model_json_schema())
+    request_json = {
+        "model": llm_model_name,
+        "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are a strict factual extractor. Analyze the meeting transcript. "
-                    "Extract tasks ONLY if they are explicitly stated. Do not infer, guess, "
-                    "or suggest owners, deadlines, or dependencies unless spoken aloud."
-                )
+                    f"{system_prompt}\n\n"
+                    "Return only one valid JSON object. Do not return Markdown, commentary, "
+                    "code fences, or an explanation. Match this JSON schema exactly:\n"
+                    f"{schema}"
+                ),
             },
-            {"role": "user", "content": transcript_text}
+            {"role": "user", "content": user_prompt},
         ],
-        response_format=FactualExtraction,
-    )
-    return completion.choices[0].message.parsed
+        "max_completion_tokens": 8192,
+    }
+    if llm_provider_name.startswith("Google Gemini") or llm_provider_name.startswith("OpenAI"):
+        request_json["response_format"] = {"type": "json_object"}
 
-async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dict[str, Any]]) -> ContextualInference:
-    if not llm_client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{llm_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {llm_api_key}"},
+            json=request_json,
+        )
+    if response.is_error:
+        try:
+            provider_error = response.json()
+            detail = provider_error.get("error", provider_error)
+        except Exception:
+            detail = response.text
         raise HTTPException(
-            status_code=500,
-            detail="No LLM provider configured. Please set GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY in .env."
+            status_code=response.status_code,
+            detail=f"{llm_provider_name} request failed: {detail}",
         )
 
+    try:
+        content = response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise ValueError("LLM provider returned an unexpected chat-completion response.") from error
+
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("LLM provider returned an empty structured response.")
+
+    cleaned_content = content.strip()
+    if cleaned_content.startswith("```"):
+        lines = cleaned_content.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned_content = "\n".join(lines).strip()
+
+    try:
+        return response_model.model_validate_json(cleaned_content)
+    except Exception as error:
+        start = cleaned_content.find("{")
+        end = cleaned_content.rfind("}")
+        if start >= 0 and end > start:
+            return response_model.model_validate_json(cleaned_content[start:end + 1])
+        raise error
+
+
+async def run_factual_extraction(transcript_text: str) -> FactualExtraction:
+    return await request_structured_completion(
+        system_prompt=(
+            "You are a strict factual action-item extractor. Extract only explicit, actionable tasks: "
+            "concrete work someone is directly asked or assigned to do, or clearly commits to doing. "
+            "Do not infer or invent tasks. Do not turn a topic, suggestion, opinion, status update, "
+            "or decision by itself into a task. Exclude greetings, small talk, weather, gossip, and "
+            "anecdotes unless someone explicitly states an action they will take. If there are no "
+            "qualifying action items, return an empty tasks list. For each task, write a concise, "
+            "action-oriented description without first-person phrasing or task-number introductions, "
+            "and do not add details that were not stated. Record owners, deadlines, and prerequisites "
+            "only when they are explicitly stated in the transcript."
+        ),
+        user_prompt=transcript_text,
+        response_model=FactualExtraction,
+    )
+
+async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dict[str, Any]]) -> ContextualInference:
     system_prompt = (
         "You are an AI project manager. You are given a meeting transcript and a strictly factual list of extracted tasks. "
         "Your job is to enrich these tasks by inferring missing context. Assign priorities, flag missing owners/deadlines, "
@@ -324,19 +385,19 @@ async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dic
         "CRITICAL PREREQUISITE RULE: If a task is blocked by an external factor, event, or third-party action that is not tracked as a separate "
         "task ID (e.g., waiting on AWS support, client approvals, or external deliveries), you MUST add a clear descriptive string of this blocker "
         "into the explicit_prerequisites or inferred_prerequisites list (e.g., 'Waiting on AWS support to approve quota'). "
-        "Do not leave prerequisites empty if an external blocker exists. Make sure all tasks keep their exact task_id."
+        "Do not leave prerequisites empty if an external blocker exists. Make sure all tasks keep their exact task_id. "
+        "Also analyze the conversation for circular dependencies discussed before a resolution: if both tasks explicitly "
+        "or clearly stated that each depended on the other's output, add them to initial_circular_dependencies with "
+        "from_task_id, to_task_id, and description. If the meeting agrees on an ordering or handoff that resolves it, "
+        "add a clear resolution to resolved_dependencies; include task IDs and the agreed execution sequence."
     )
     user_prompt = f"Transcript:\n{transcript_text}\n\nFactual Tasks:\n{factual_tasks}"
 
-    completion = await llm_client.beta.chat.completions.parse(
-        model=llm_model_name,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        response_format=ContextualInference,
+    return await request_structured_completion(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=ContextualInference,
     )
-    return completion.choices[0].message.parsed
 
 # ---------------------------------------------------------------------------
 # Core API Routes
@@ -402,7 +463,10 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
         enriched_tasks_dict = [task.model_dump() for task in enriched_data.enriched_tasks]
 
         # Pass 3: Deterministic Graph Validation
-        graph_analysis = analyze_task_graph(enriched_tasks_dict)
+        graph_analysis = analyze_task_graph(
+            enriched_tasks_dict,
+            enriched_data.model_dump(),
+        )
 
         # Update Document in Database
         await update_meeting_doc(meeting_id, {
@@ -463,7 +527,10 @@ async def infer_context_pass(meeting_id: str):
         enriched_data = await run_contextual_inference(raw_transcript, factual_tasks)
         enriched_tasks_dict = [task.model_dump() for task in enriched_data.enriched_tasks]
 
-        graph_analysis = analyze_task_graph(enriched_tasks_dict)
+        graph_analysis = analyze_task_graph(
+            enriched_tasks_dict,
+            enriched_data.model_dump(),
+        )
 
         await update_meeting_doc(meeting_id, {
             "enriched_tasks": enriched_tasks_dict,

@@ -21,6 +21,8 @@ const state = {
   mode: MODE.NONE,
   isRecording: false,
   isProcessing: false,
+  meetingId: null,
+  transcriptSnapshot: "",
   startedAt: null,
   entries: [],
   // Audio / speech
@@ -41,10 +43,22 @@ const statusBadge       = $("statusBadge");
 const transcriptEl      = $("transcript");
 const processStatus     = $("processStatus");
 const processButton     = $("processButton");
-const resultsSection    = $("resultsSection");
-const resultsSummary    = $("resultsSummary");
+const extractTab        = $("extractTab");
+const analyzeTab        = $("analyzeTab");
+const factualPanel      = $("factualPanel");
+const analysisPanel     = $("analysisPanel");
+const analyzeMoreButton = $("analyzeMoreButton");
+const resultsMeetingTitle = $("resultsMeetingTitle");
 const graphCard         = $("graphCard");
-const tasksList         = $("tasksList");
+const factualTasksList  = $("factualTasksList");
+const analysisTasksList = $("analysisTasksList");
+const factualResults    = $("factualResults");
+const factualSummary    = $("factualSummary");
+const factualEmptyState = $("factualEmptyState");
+const analysisResults   = $("analysisResults");
+const analysisSummary   = $("analysisSummary");
+const analysisEmptyState = $("analysisEmptyState");
+const analysisStatus    = $("analysisStatus");
 const captureBanner     = $("captureBanner");
 const captureBannerTitle  = $("captureBannerTitle");
 const captureBannerDesc   = $("captureBannerDesc");
@@ -122,6 +136,19 @@ function updateOrAddTurnEntry(turnId, speaker, fullText) {
 }
 
 function renderTranscript() {
+  if (state.transcriptSnapshot && state.transcriptSnapshot !== transcriptText()) {
+    state.meetingId = null;
+    state.transcriptSnapshot = "";
+    factualResults.style.display = "none";
+    analysisResults.style.display = "none";
+    factualEmptyState.hidden = false;
+    factualEmptyState.textContent = "Transcript changed. Extract again to refresh these results.";
+    analysisEmptyState.hidden = false;
+    analysisEmptyState.textContent = "Analyze more will extract the updated transcript before running analysis.";
+    processStatus.textContent = "";
+    analysisStatus.textContent = "";
+  }
+
   transcriptEl.className = state.entries.length
     ? "transcript"
     : "transcript empty-state";
@@ -422,18 +449,7 @@ function startSpeechRecognition(stream) {
 // ── Payload ───────────────────────────────────────────────────────────────────
 function meetingPayload() {
   return {
-    meeting: {
-      title:       $("meetingTitle").value.trim() || "Untitled meeting",
-      participants: $("participants").value.split(",").map((n) => n.trim()).filter(Boolean),
-      startedAt:   state.startedAt ? new Date(state.startedAt).toISOString() : null,
-      endedAt:     new Date().toISOString(),
-    },
     transcript: state.entries,
-    processing: {
-      requestedOutputs: ["summary", "topics", "decisions", "action_items", "unresolved_issues"],
-      source:   "meeting-minutes-companion",
-      version:  "1.0.0",
-    },
   };
 }
 
@@ -452,22 +468,159 @@ function downloadBlob(blob, filename) {
 }
 
 // ── Results rendering ─────────────────────────────────────────────────────────
-function renderResults(data) {
-  resultsSection.style.display = "block";
-  resultsSummary.textContent = `Meeting ID: ${data.meeting_id} • ${data.total_tasks || 0} tasks`;
+function renderTasks(tasks, enriched) {
+  const taskList = enriched ? analysisTasksList : factualTasksList;
+  taskList.innerHTML = tasks.length
+    ? tasks.map((task) => {
+        const taskId = escapeHtml(task.task_id || "Task");
+        const description = escapeHtml(task.description || "");
+        if (!enriched) {
+          const owner = task.explicit_owner
+            ? escapeHtml(task.explicit_owner)
+            : "Not specified";
+          const deadline = task.explicit_deadline
+            ? escapeHtml(task.explicit_deadline)
+            : "Not specified";
+          const prerequisites = task.explicit_prerequisites || [];
+          return `<article class="task-item factual-task">
+            <div class="task-top"><span class="task-id">${taskId}</span></div>
+            <p class="task-desc">${description}</p>
+            <div class="task-meta">
+              <span class="task-meta-item"><strong>Explicit owner:</strong> ${owner}</span>
+              <span class="task-meta-item"><strong>Explicit deadline:</strong> ${deadline}</span>
+            </div>
+            ${prerequisites.length
+              ? `<div class="task-prereqs"><strong>Explicit prerequisites:</strong>
+                 ${prerequisites.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`
+              : ""}
+          </article>`;
+        }
 
-  const graph      = data.graph_analysis || {};
+        const allowedPriorities = ["Low", "Medium", "High"];
+        const priority = allowedPriorities.includes(task.priority) ? task.priority : "Medium";
+        const status = escapeHtml(task.status || "pending");
+        const owner = task.owner
+          ? escapeHtml(task.owner)
+          : task.missing_owner ? "<em>Unassigned</em>" : "—";
+        const deadline = task.deadline
+          ? escapeHtml(task.deadline)
+          : task.missing_deadline ? "<em>No deadline</em>" : "—";
+        const prereqs = [
+          ...(task.explicit_prerequisites || []),
+          ...(task.inferred_prerequisites || []),
+        ];
+        return `<article class="task-item priority-${priority}">
+          <div class="task-top">
+            <span class="task-id">${taskId}</span>
+            <div class="task-badges">
+              <span class="badge badge-${priority}">${priority}</span>
+              <span class="badge badge-status">${status}</span>
+            </div>
+          </div>
+          <p class="task-desc">${description}</p>
+          <div class="task-meta">
+            <span class="task-meta-item"><strong>Owner:</strong> ${owner}</span>
+            <span class="task-meta-item"><strong>Due:</strong> ${deadline}</span>
+          </div>
+          ${prereqs.length
+            ? `<div class="task-prereqs"><strong>Prerequisites:</strong>
+               ${prereqs.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`
+            : ""}
+        </article>`;
+      }).join("")
+    : `<p class="hint">No ${enriched ? "" : "explicit "}tasks found in this transcript.</p>`;
+}
+
+function transcriptText() {
+  return state.entries
+    .map((entry) => {
+      const speaker = entry.speaker && !entry.text.startsWith(`${entry.speaker}:`)
+        ? `${entry.speaker}: `
+        : "";
+      return `${entry.timestamp ? `[${entry.timestamp}] ` : ""}${speaker}${entry.text}`;
+    })
+    .join("\n");
+}
+
+function setWorkflowTab(tab) {
+  const showAnalysis = tab === "analysis";
+  extractTab.classList.toggle("active", !showAnalysis);
+  analyzeTab.classList.toggle("active", showAnalysis);
+  extractTab.setAttribute("aria-selected", String(!showAnalysis));
+  analyzeTab.setAttribute("aria-selected", String(showAnalysis));
+  factualPanel.hidden = showAnalysis;
+  analysisPanel.hidden = !showAnalysis;
+}
+
+function renderFactualResults(data, snapshot = transcriptText()) {
+  const meeting = data.data;
+  const tasks = meeting.tasks || [];
+  state.meetingId = data.meeting_id;
+  state.transcriptSnapshot = snapshot;
+  resultsMeetingTitle.textContent = meeting.meeting_title || "Untitled meeting";
+  factualSummary.textContent = `Meeting ID: ${state.meetingId} · ${tasks.length} factual task${tasks.length === 1 ? "" : "s"}`;
+  renderTasks(tasks, false);
+  factualResults.style.display = "block";
+  factualEmptyState.hidden = true;
+  analysisResults.style.display = "none";
+  analysisEmptyState.hidden = false;
+  analysisEmptyState.textContent = "Select Analyze more to review context, dependencies, and potential blockers.";
+  analysisStatus.textContent = "";
+  graphCard.innerHTML = "";
+  analysisTasksList.innerHTML = "";
+  setWorkflowTab("factual");
+}
+
+function renderAnalysisResults(result) {
+  const analysis = result.data || {};
+  const tasks = analysis.tasks || [];
+  const graph = analysis.graph_analysis || {};
   const isFeasible = graph.is_feasible !== false;
   const bottlenecks = graph.bottlenecks || [];
-  const circular   = graph.circular_dependencies || [];
+  const circular = graph.circular_dependencies || [];
+  const initialCycles = graph.initial_circular_dependencies || [];
+  const resolutions = graph.resolved_dependencies || [];
+  const hasResolution = initialCycles.length > 0 && resolutions.length > 0;
 
-  let gHtml = `<div class="${isFeasible ? "graph-feasible" : "graph-infeasible"}">
+  let gHtml = "";
+
+  if (initialCycles.length) {
+    gHtml += `<div class="cycle-history">
+      <div class="cycle-history-header">
+        <strong>Initial circular dependencies detected</strong>
+        <span class="badge badge-blocked">${initialCycles.length}</span>
+      </div>
+      <ul class="cycle-list">
+        ${initialCycles.map((cycle) => `
+          <li>
+            <strong>${escapeHtml(cycle.from_task_id || "Task")} ➔ ${escapeHtml(cycle.to_task_id || "Task")}</strong>
+            ${cycle.description ? `<span>${escapeHtml(cycle.description)}</span>` : ""}
+          </li>
+        `).join("")}
+      </ul>
+    </div>`;
+  }
+
+  if (resolutions.length) {
+    gHtml += `<div class="cycle-resolution">
+      <strong>Meeting resolution</strong>
+      <ul class="resolution-list">
+        ${resolutions.map((resolution) => `
+          <li>
+            ${resolution.description ? escapeHtml(resolution.description) : escapeHtml(JSON.stringify(resolution))}
+          </li>
+        `).join("")}
+      </ul>
+    </div>`;
+  }
+
+  gHtml += `<div class="${isFeasible ? "graph-feasible" : "graph-infeasible"}">
     ${isFeasible ? "✓ Schedule Feasible – No Circular Deadlocks" : "⚠ Infeasible – Circular Dependency Detected!"}
   </div>`;
 
   if (circular.length) {
     gHtml += `<p style="font-size:12px;color:#b91c1c;margin:4px 0"><strong>Cycle:</strong>
-      ${circular.map((c) => `${c.from} ➔ ${c.to}`).join(", ")}</p>`;
+      ${circular.map((c) => `${escapeHtml(c.from)} ➔ ${escapeHtml(c.to)}`).join(", ")}</p>`;
   }
 
   if (bottlenecks.length) {
@@ -478,7 +631,7 @@ function renderResults(data) {
             (b) =>
               `<li><strong>${escapeHtml(b.entity_id)}</strong>
               ${b.is_external ? '<span class="badge badge-blocked">External</span>' : ""}
-              → blocks <strong>${b.blocks_count}</strong> task(s)</li>`
+              → blocks <strong>${escapeHtml(b.blocks_count)}</strong> task(s)</li>`
           )
           .join("")}
       </ul></div>`;
@@ -486,82 +639,103 @@ function renderResults(data) {
     gHtml += `<p style="font-size:12px;color:#64748b;margin:4px 0 0">No critical bottlenecks.</p>`;
   }
   graphCard.innerHTML = gHtml;
-
-  const tasks = data.tasks || [];
-  tasksList.innerHTML = tasks.length
-    ? tasks
-        .map((task) => {
-          const priority = task.priority || "Medium";
-          const status   = task.status   || "pending";
-          const owner    = task.owner    || (task.missing_owner ? "<em>Unassigned</em>" : "—");
-          const deadline = task.deadline || (task.missing_deadline ? "<em>No deadline</em>" : "—");
-          const prereqs  = [
-            ...(task.explicit_prerequisites  || []),
-            ...(task.inferred_prerequisites  || []),
-          ];
-          return `<article class="task-item priority-${priority}">
-            <div class="task-top">
-              <span class="task-id">${escapeHtml(task.task_id)}</span>
-              <div class="task-badges">
-                <span class="badge badge-${priority}">${priority}</span>
-                <span class="badge badge-status">${escapeHtml(status)}</span>
-              </div>
-            </div>
-            <p class="task-desc">${escapeHtml(task.description)}</p>
-            <div class="task-meta">
-              <span class="task-meta-item"><strong>Owner:</strong> ${owner}</span>
-              <span class="task-meta-item"><strong>Due:</strong> ${deadline}</span>
-            </div>
-            ${
-              prereqs.length
-                ? `<div class="task-prereqs"><strong>Prerequisites:</strong>
-                   ${prereqs.map((p) => `<span>${escapeHtml(p)}</span>`).join("")}</div>`
-                : ""
-            }
-          </article>`;
-        })
-        .join("")
-    : `<p class="hint">No explicit tasks found in this transcript.</p>`;
+  analysisSummary.textContent = `Meeting ID: ${state.meetingId} · ${tasks.length} task${tasks.length === 1 ? "" : "s"} analyzed`;
+  renderTasks(tasks, true);
+  analysisResults.style.display = "block";
+  analysisEmptyState.hidden = true;
+  setWorkflowTab("analysis");
 }
 
-// ── Process button ────────────────────────────────────────────────────────────
+async function getApiBaseUrl() {
+  const settings = await chrome.storage.local.get(["processingEndpoint"]);
+  const url = new URL(settings.processingEndpoint || PROCESSING_ENDPOINT_DEFAULT);
+  url.pathname = url.pathname.replace(/\/api\/meetings\/process\/?$/, "").replace(/\/$/, "");
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+
+async function postJson(url, body) {
+  const options = { method: "POST" };
+  if (body !== undefined) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try { const result = await response.json(); if (result.detail) detail = result.detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+async function extractFacts() {
+  if (!state.entries.length) throw new Error("Capture or add transcript text before processing.");
+  const baseUrl = await getApiBaseUrl();
+  const snapshot = transcriptText();
+  const endpoint = new URL(baseUrl);
+  endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/api/v1/extract-factual`;
+  const result = await postJson(endpoint, { transcript_text: snapshot });
+  if (!result.meeting_id || !result.data || !Array.isArray(result.data.tasks)) {
+    throw new Error("The backend returned an unexpected factual extraction response.");
+  }
+  renderFactualResults(result, snapshot);
+  processStatus.textContent = `Extracted ${result.data.tasks.length} factual task(s).`;
+  processStatus.className = "hint success";
+}
+
+extractTab.addEventListener("click", () => setWorkflowTab("factual"));
+analyzeTab.addEventListener("click", () => setWorkflowTab("analysis"));
+
 processButton.addEventListener("click", async () => {
   if (state.isProcessing) return;
-  if (!state.entries.length) {
-    processStatus.textContent = "Please capture transcript entries before processing.";
-    processStatus.className   = "hint error";
-    return;
-  }
-
-  const settings = await chrome.storage.local.get(["processingEndpoint"]);
-  const endpoint = settings.processingEndpoint || PROCESSING_ENDPOINT_DEFAULT;
-
-  processStatus.textContent = `Sending to ${endpoint} …`;
-  processStatus.className   = "hint";
-  processButton.disabled    = true;
-  state.isProcessing        = true;
-
+  state.isProcessing = true;
+  processButton.disabled = true;
+  analyzeMoreButton.disabled = true;
+  processStatus.className = "hint";
+  processStatus.textContent = "Extracting explicitly stated tasks…";
   try {
-    const response = await fetch(endpoint, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(meetingPayload()),
-    });
-    if (!response.ok) {
-      let detail = `HTTP ${response.status}`;
-      try { const j = await response.json(); if (j.detail) detail = j.detail; } catch (_) {}
-      throw new Error(detail);
-    }
-    const data = await response.json();
-    processStatus.textContent = `✓ Done! ${data.total_tasks || 0} tasks extracted.`;
-    processStatus.className   = "hint success";
-    renderResults(data);
+    await extractFacts();
   } catch (err) {
-    processStatus.textContent = `Failed: ${err.message}`;
-    processStatus.className   = "hint error";
+    processStatus.textContent = `Extraction failed: ${err.message}`;
+    processStatus.className = "hint error";
   } finally {
     processButton.disabled = false;
-    state.isProcessing     = false;
+    analyzeMoreButton.disabled = false;
+    state.isProcessing = false;
+  }
+});
+
+analyzeMoreButton.addEventListener("click", async () => {
+  if (state.isProcessing) return;
+  state.isProcessing = true;
+  analyzeMoreButton.disabled = true;
+  processButton.disabled = true;
+  analysisStatus.className = "hint";
+  analysisStatus.textContent = "Preparing factual tasks…";
+  try {
+    if (!state.meetingId || state.transcriptSnapshot !== transcriptText()) {
+      await extractFacts();
+    }
+    analysisStatus.textContent = "Analyzing context, dependencies, and schedule…";
+    const baseUrl = await getApiBaseUrl();
+    const endpoint = new URL(baseUrl);
+    endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/api/v1/infer-context/${encodeURIComponent(state.meetingId)}`;
+    const result = await postJson(endpoint);
+    if (!result.data || !Array.isArray(result.data.tasks)) {
+      throw new Error("The backend returned an unexpected analysis response.");
+    }
+    renderAnalysisResults(result);
+    analysisStatus.textContent = "Context and dependency analysis complete.";
+    analysisStatus.className = "hint success";
+  } catch (err) {
+    analysisStatus.textContent = `Analysis failed: ${err.message}`;
+    analysisStatus.className = "hint error";
+  } finally {
+    analyzeMoreButton.disabled = false;
+    processButton.disabled = false;
+    state.isProcessing = false;
   }
 });
 
@@ -570,10 +744,6 @@ $("clearButton").addEventListener("click", () => {
   if (state.isRecording) return;
   state.entries = [];
   renderTranscript();
-});
-
-$("clearResultsButton").addEventListener("click", () => {
-  resultsSection.style.display = "none";
 });
 
 $("exportJsonButton").addEventListener("click", () => {
@@ -605,8 +775,6 @@ $("addManualBtn").addEventListener("click", () => {
 
 // Demo transcript (uses realistic multi-speaker format)
 $("sampleButton").addEventListener("click", () => {
-  $("meetingTitle").value  = "Sprint Planning Sync";
-  $("participants").value  = "Alice, Bob, Charlie";
   state.entries = [
     { timestamp: "00:05", text: "Alice: Welcome everyone. Bob, please build the API database migration by Wednesday.", source: "demo" },
     { timestamp: "00:22", text: "Bob: Sure, but Charlie has to finish the schema definition first.", source: "demo" },

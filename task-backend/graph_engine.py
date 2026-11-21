@@ -1,8 +1,12 @@
 import networkx as nx
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
-def analyze_task_graph(enriched_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def analyze_task_graph(
+    enriched_tasks: List[Dict[str, Any]],
+    contextual_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     G = nx.DiGraph()
+    contextual_data = contextual_data or {}
 
     # 1. Add all standard tasks as nodes
     for task in enriched_tasks:
@@ -24,15 +28,21 @@ def analyze_task_graph(enriched_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
             # Direction: Prerequisite blocks the Task
             G.add_edge(pre, task_id)
 
-    # 3. Detect Circular Dependencies (e.g., T1 -> T2 -> T1)
-    # We catch the first cycle found to flag the schedule as infeasible.
-    try:
-        cycles = list(nx.find_cycle(G, orientation="original"))
-        circular_dependencies = [{"from": u, "to": v} for u, v, _ in cycles]
-        is_feasible = False
-    except nx.NetworkXNoCycle:
-        circular_dependencies = []
-        is_feasible = True
+    # 3. Detect unresolved Circular Dependencies in the final execution plan.
+    unresolved_cycles = list(nx.simple_cycles(G))
+    circular_dependencies = []
+    for cycle in unresolved_cycles:
+        if len(cycle) < 2:
+            continue
+        for index, task_id in enumerate(cycle):
+            prerequisite_id = cycle[index - 1]
+            circular_dependencies.append({"from": prerequisite_id, "to": task_id})
+    is_feasible = not bool(circular_dependencies)
+
+    # Preserve dependencies discussed in the original conversation, even when the
+    # final plan contains a resolution and no longer forms a cycle.
+    initial_circular_dependencies = contextual_data.get("initial_circular_dependencies", [])
+    resolved_dependencies = contextual_data.get("resolved_dependencies", [])
 
     # 4. Identify Blockers and Bottlenecks
     # A node's out-degree is how many tasks it points to (blocks).
@@ -58,6 +68,9 @@ def analyze_task_graph(enriched_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "is_feasible": is_feasible,
         "circular_dependencies": circular_dependencies,
+        "initial_circular_dependencies": initial_circular_dependencies,
+        "resolved_dependencies": resolved_dependencies,
+        "has_resolved_circular_dependencies": bool(initial_circular_dependencies and resolved_dependencies),
         "bottlenecks": bottlenecks,
         "visualization_graph": {
             "nodes": nodes_data,

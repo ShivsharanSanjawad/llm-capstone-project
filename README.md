@@ -8,7 +8,8 @@ An end-to-end meeting intelligence pipeline that captures live meeting transcrip
 
 ```mermaid
 graph LR
-    Extension[Chrome Side Panel Extension] -->|POST /api/meetings/process| Backend[FastAPI Backend Engine]
+    Extension[Chrome Side Panel Extension] -->|POST /api/v1/extract-factual| Backend[FastAPI Backend Engine]
+    Extension -->|POST /api/v1/infer-context/{meeting_id}| Backend
     Backend -->|Pass 1: Strict Factual Extraction| LLM[LLM: Gemini / Groq / OpenAI]
     Backend -->|Pass 2: Contextual Inference| LLM
     Backend -->|Pass 3: Dependency Graph Analysis| NetworkX[NetworkX Graph Engine]
@@ -19,13 +20,13 @@ graph LR
 1. **Frontend (Browser Extension)**:
    - Manifest V3 Side Panel extension (`Extension/`).
    - Captures speech in real-time with timestamps.
-   - Sends structured meeting payload to `http://127.0.0.1:8000/api/meetings/process`.
-   - Displays extracted tasks, priorities, unassigned flags, deadlines, and schedule bottlenecks directly in the side panel.
+   - Extracts factual tasks from the transcript and displays the meeting title and task descriptions.
+   - Runs contextual inference and graph analysis on request, then displays priorities, deadlines, and schedule bottlenecks.
 
 2. **Backend (`task-backend/`)**:
    - **FastAPI** with CORS enabled for extension and web frontends.
-   - **Pass 1 (`/api/v1/extract-factual`)**: Strict factual extraction (only tasks explicitly spoken aloud).
-   - **Pass 2 (`/api/v1/infer-context/{meeting_id}`)**: AI Project Manager inference (priorities, missing owners, deadlines, inferred dependencies, external blockers).
+   - **Pass 1 (`/api/v1/extract-factual`)**: Strict factual extraction (only tasks explicitly spoken aloud); returns a meeting ID.
+   - **Pass 2 (`/api/v1/infer-context/{meeting_id}`)**: Optional AI Project Manager inference (priorities, missing owners, deadlines, inferred dependencies, external blockers).
    - **Graph Engine (`graph_engine.py`)**: Uses NetworkX to build a directed acyclic graph (DAG), detecting circular dependency deadlocks and surfacing schedule bottlenecks.
    - **Storage**: Persists to MongoDB Atlas when configured, with automatic fallback to local JSON storage (`storage/meetings_store.json`).
 
@@ -90,4 +91,3 @@ Verify backend health at: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/h
 | `POST` | `/api/v1/infer-context/{id}` | Pass 2: Contextual enrichment & graph analysis |
 | `GET` | `/api/meetings` | List all processed meetings |
 | `GET` | `/api/meetings/{id}` | Retrieve meeting document and graph analysis |
-

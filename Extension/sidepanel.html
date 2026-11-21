@@ -56,18 +56,6 @@
         <p id="recordingNotice" class="hint">Choose a capture mode to begin.</p>
       </section>
 
-      <!-- Metadata -->
-      <section class="card">
-        <div class="field-grid">
-          <label>Meeting title
-            <input id="meetingTitle" type="text" placeholder="e.g. Sprint planning">
-          </label>
-          <label>Participants (comma-separated)
-            <input id="participants" type="text" placeholder="Alice, Bob, Charlie">
-          </label>
-        </div>
-      </section>
-
       <!-- Transcript -->
       <section class="card transcript-card">
         <div class="section-heading">
@@ -95,31 +83,67 @@
       </section>
 
       <!-- Processing -->
-      <section class="card">
-        <h2>Meeting Actions &amp; Processing</h2>
+      <section class="card workflow-card">
+        <h2>Task intelligence</h2>
         <p class="section-description">
-          Send transcript to the backend: extracts action items with owners &amp; deadlines,
-          infers dependencies, and validates the schedule graph.
+          Extract tasks directly from the conversation or analyze them for priorities,
+          dependencies, and potential blockers.
         </p>
         <div class="button-row">
           <button id="exportJsonButton" class="secondary">Export JSON</button>
           <button id="exportAudioButton" class="secondary" disabled>Export audio</button>
         </div>
-        <button id="processButton" class="primary full-width">Process with Backend</button>
-        <p id="processStatus" class="hint" role="status"></p>
       </section>
 
-      <!-- AI Results -->
-      <section id="resultsSection" class="card" style="display: none;">
-        <div class="section-heading">
-          <div>
-            <h2>AI Tasks &amp; Graph Analysis</h2>
-            <p id="resultsSummary" class="hint"></p>
-          </div>
-          <button id="clearResultsButton" class="text-button">Dismiss</button>
+      <!-- Workflow tabs and results -->
+      <section id="resultsSection" class="card results-section">
+        <div class="workflow-tabs" role="tablist" aria-label="Task processing options">
+          <button id="extractTab" class="workflow-tab active" type="button" role="tab"
+            aria-selected="true" aria-controls="factualPanel">
+            <span class="workflow-step">01</span>
+            <span><strong>Extract tasks</strong><small>What was explicitly said</small></span>
+          </button>
+          <button id="analyzeTab" class="workflow-tab" type="button" role="tab"
+            aria-selected="false" aria-controls="analysisPanel">
+            <span class="workflow-step">02</span>
+            <span><strong>Analyze more</strong><small>Context, priorities &amp; blockers</small></span>
+          </button>
         </div>
-        <div id="graphCard" class="graph-card"></div>
-        <div id="tasksList" class="tasks-list"></div>
+        <div id="factualPanel" class="workflow-panel" role="tabpanel" aria-labelledby="extractTab">
+          <div class="panel-heading">
+            <div>
+              <h2>Factual task extraction</h2>
+              <p class="panel-description">Tasks and details stated in the transcript.</p>
+            </div>
+            <button id="processButton" class="primary" type="button">Extract tasks</button>
+          </div>
+          <p id="processStatus" class="hint workflow-status" role="status"></p>
+          <div id="factualResults" class="workflow-output" style="display: none;">
+            <div class="meeting-title-row">
+              <span class="result-label">MEETING</span>
+              <h3 id="resultsMeetingTitle" class="results-meeting-title"></h3>
+            </div>
+            <p id="factualSummary" class="result-summary"></p>
+            <div id="factualTasksList" class="tasks-list"></div>
+          </div>
+          <p id="factualEmptyState" class="workflow-empty">Run extraction to see the meeting title and factual tasks.</p>
+        </div>
+        <div id="analysisPanel" class="workflow-panel" role="tabpanel" aria-labelledby="analyzeTab" hidden>
+          <div class="panel-heading">
+            <div>
+              <h2>Context &amp; dependency analysis</h2>
+              <p class="panel-description">Priorities, ownership, deadlines, dependencies, and bottlenecks.</p>
+            </div>
+            <button id="analyzeMoreButton" class="primary" type="button">Analyze more</button>
+          </div>
+          <p id="analysisStatus" class="hint workflow-status" role="status"></p>
+          <div id="analysisResults" class="workflow-output" style="display: none;">
+            <p id="analysisSummary" class="result-summary"></p>
+            <div id="graphCard" class="graph-card"></div>
+            <div id="analysisTasksList" class="tasks-list"></div>
+          </div>
+          <p id="analysisEmptyState" class="workflow-empty">Analysis can run directly, or after extracting factual tasks.</p>
+        </div>
       </section>
 
       <footer>

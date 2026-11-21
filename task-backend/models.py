@@ -1,10 +1,10 @@
 # models.py
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 class ExplicitTask(BaseModel):
     task_id: str = Field(description="Unique identifier for the task, e.g., T1")
-    description: str = Field(description="Exact description of the task based on the transcript")
+    description: str = Field(description="A concise, action-oriented description of the work, excluding first-person phrasing and task-number introductions based on the transcript")
     explicit_owner: Optional[str] = Field(
         default=None, 
         description="The person explicitly assigned to this task. Leave null if not stated out loud."
@@ -25,7 +25,7 @@ class FactualExtraction(BaseModel):
 
 class EnrichedTask(BaseModel):
     task_id: str = Field(description="Must exactly match the task_id from Pass 1")
-    description: str = Field(description="Task description")
+    description: str = Field(description="A concise, action-oriented description of the work, excluding first-person phrasing and task-number introductions based on the transcript")
     owner: Optional[str] = Field(description="The explicitly stated owner, or logically inferred owner. Null if entirely unknown.")
     missing_owner: bool = Field(description="Set to True if the owner was not explicitly stated and cannot be inferred confidently.")
     deadline: Optional[str] = Field(description="Explicitly stated or logically inferred deadline.")
@@ -45,3 +45,11 @@ class EnrichedTask(BaseModel):
 
 class ContextualInference(BaseModel):
     enriched_tasks: List[EnrichedTask]
+    initial_circular_dependencies: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Circular dependencies explicitly discussed in the original meeting before any resolution. Each item should contain 'from_task_id', 'to_task_id', and 'description'."
+    )
+    resolved_dependencies: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Agreements or execution steps that resolved the original circular dependencies. Each item should explain the resolution and affected task IDs."
+    )

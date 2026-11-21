@@ -7,11 +7,11 @@ This folder contains the browser extension for **Meeting Minutes & Task Intellig
 - Chrome / Edge Manifest V3 side panel.
 - Real-time speech recognition with timestamped transcript logging.
 - Microphone audio recording exportable to WebM.
-- One-click processing with the local FastAPI backend.
+- Two-stage processing with the local FastAPI backend.
 - Direct visualization of:
-  - Extracted tasks with Priority, Assignee, and Deadline.
-  - Schedule feasibility checks (detects circular dependencies).
-  - Schedule bottlenecks and external blockers flagged by the graph engine.
+  - Factual extraction results with the meeting title and explicit task descriptions.
+  - Optional contextual analysis with priorities, assignees, and deadlines.
+  - Schedule feasibility checks and bottlenecks from the graph engine.
 - Configurable backend endpoint with built-in connection testing.
 
 ## Install for Development
@@ -21,33 +21,19 @@ This folder contains the browser extension for **Meeting Minutes & Task Intellig
 3. Choose **Load unpacked** and select this `Extension` folder.
 4. Click the extension action in the toolbar to open the side panel.
 5. Click **Start meeting** to capture live speech.
-6. When finished, click **Process with Backend** to analyze tasks.
+6. When finished, click **Extract tasks** to display explicitly stated tasks.
+7. Click **Analyze more** to run contextual inference and graph analysis. If extraction has not run for the current transcript, the extension extracts it first automatically.
 
 ## Settings & Backend Contract
 
-The extension defaults to `http://127.0.0.1:8000/api/meetings/process`. You can change this in **Processing settings** (`options.html`) and test the connection at any time.
+The extension defaults to `http://127.0.0.1:8000/api/meetings/process`. It uses this configured backend URL to call `POST /api/v1/extract-factual`, then calls `POST /api/v1/infer-context/{meeting_id}` when **Analyze more** is selected. You can change the URL in **Processing settings** (`options.html`) and test the connection at any time.
 
-The payload sent to the backend follows this structure:
+Factual extraction receives the transcript as plain text:
 
 ```json
 {
-  "meeting": {
-    "title": "Sprint planning",
-    "participants": ["Alice", "Bob"],
-    "startedAt": "2026-11-02T16:00:00.000Z",
-    "endedAt": "2026-11-02T16:30:00.000Z"
-  },
-  "transcript": [
-    {
-      "timestamp": "00:05",
-      "text": "Bob, please fix the database migration by Friday.",
-      "source": "browser-speech-recognition"
-    }
-  ],
-  "processing": {
-    "requestedOutputs": ["summary", "topics", "decisions", "action_items", "unresolved_issues"],
-    "source": "meeting-minutes-companion",
-    "version": "1.0.0"
-  }
+  "transcript_text": "[00:05] Bob, please fix the database migration by Friday."
 }
 ```
+
+The extension displays the title and factual tasks from the extraction response. The optional analysis request uses its `meeting_id` and displays the enriched tasks and graph results.
