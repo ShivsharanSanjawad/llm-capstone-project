@@ -1,0 +1,193 @@
+{
+ "name": "meeting-intelligence-gold-v1",
+ "note": "Small hand-labelled set. Meeting day is Wed 2026-11-25. Dates are exact calendar dates.",
+ "cases": [
+  {
+   "id": "sprint_planning",
+   "description": "Three owned tasks with spoken deadlines",
+   "meeting_date": "2026-11-25",
+   "transcript": "[10:00] Priya: Quick planning for the mobile app. Rahul, please finish the login page by Friday.\n[10:01] Rahul: Sure, I'll finish the login page by Friday.\n[10:02] Priya: Amit, can you write the user data API within five days?\n[10:03] Amit: Yes, within five days works.\n[10:04] Priya: And I will prepare the release notes by the end of the month.",
+   "gold": {
+    "tasks": [
+     {
+      "id": "G1",
+      "keywords": [
+       "login"
+      ],
+      "owner": "Rahul",
+      "deadline_date": "2026-11-27"
+     },
+     {
+      "id": "G2",
+      "keywords": [
+       "api"
+      ],
+      "owner": "Amit",
+      "deadline_date": "2026-11-30"
+     },
+     {
+      "id": "G3",
+      "keywords": [
+       "release",
+       "notes"
+      ],
+      "owner": "Priya",
+      "deadline_date": "2026-11-30"
+     }
+    ],
+    "dependencies": [],
+    "has_cycle": false
+   }
+  },
+  {
+   "id": "circular_deadlock",
+   "description": "Two tasks that each wait for the other",
+   "meeting_date": "2026-11-25",
+   "transcript": "[11:00] Neha: Amit, you need to finish the payment module, but you can't finish it until Kunal sends the API keys.\n[11:01] Kunal: I can't send the API keys until Amit finishes the payment module, because the keys are tied to the module.\n[11:02] Neha: That is a deadlock. Kunal, please send the API keys by tomorrow, and Amit, finish the payment module within three days.",
+   "gold": {
+    "tasks": [
+     {
+      "id": "G1",
+      "keywords": [
+       "payment"
+      ],
+      "owner": "Amit",
+      "deadline_date": "2026-11-28"
+     },
+     {
+      "id": "G2",
+      "keywords": [
+       "api",
+       "keys"
+      ],
+      "owner": "Kunal",
+      "deadline_date": "2026-11-26"
+     }
+    ],
+    "dependencies": [
+     [
+      "G2",
+      "G1"
+     ],
+     [
+      "G1",
+      "G2"
+     ]
+    ],
+    "has_cycle": true
+   }
+  },
+  {
+   "id": "small_talk",
+   "description": "No commitments at all: nothing should be extracted",
+   "meeting_date": "2026-11-25",
+   "transcript": "[12:00] Maya: Did you see the match last night? Unbelievable ending.\n[12:01] Jo: I missed it, the traffic was terrible and then it started raining.\n[12:02] Maya: The weather has been odd all week. Anyway, the cafeteria has a new menu.\n[12:03] Jo: Nice, I heard the pasta is good.",
+   "gold": {
+    "tasks": [],
+    "dependencies": [],
+    "has_cycle": false
+   }
+  },
+  {
+   "id": "dependency_chain",
+   "description": "A three-step chain expressed with sequencing words",
+   "meeting_date": "2026-11-25",
+   "transcript": "[14:00] Sam: We have to ship the report. First Dana prepares the dataset, and only after that can Lee build the charts.\n[14:01] Lee: Right, I will build the charts once the dataset is ready, then Maya writes the summary after the charts are done.\n[14:02] Maya: Okay, I will write the summary after the charts. Dana, can you get the dataset ready by Thursday?\n[14:03] Dana: Yes, I will have the dataset by Thursday.",
+   "gold": {
+    "tasks": [
+     {
+      "id": "G1",
+      "keywords": [
+       "dataset"
+      ],
+      "owner": "Dana",
+      "deadline_date": "2026-11-26"
+     },
+     {
+      "id": "G2",
+      "keywords": [
+       "charts"
+      ],
+      "owner": "Lee",
+      "deadline_date": null
+     },
+     {
+      "id": "G3",
+      "keywords": [
+       "summary"
+      ],
+      "owner": "Maya",
+      "deadline_date": null
+     }
+    ],
+    "dependencies": [
+     [
+      "G1",
+      "G2"
+     ],
+     [
+      "G2",
+      "G3"
+     ]
+    ],
+    "has_cycle": false
+   }
+  },
+  {
+   "id": "external_blocker",
+   "description": "A task blocked by something outside the team, plus a relative deadline",
+   "meeting_date": "2026-11-25",
+   "transcript": "[09:30] Ravi: Deploying to production is blocked until the security team approves the audit.\n[09:31] Ravi: I will deploy the service as soon as the approval comes through.\n[09:32] Tara: And I will update the runbook in two weeks.",
+   "gold": {
+    "tasks": [
+     {
+      "id": "G1",
+      "keywords": [
+       "deploy"
+      ],
+      "owner": "Ravi",
+      "deadline_date": null
+     },
+     {
+      "id": "G2",
+      "keywords": [
+       "runbook"
+      ],
+      "owner": "Tara",
+      "deadline_date": "2026-12-09"
+     }
+    ],
+    "dependencies": [],
+    "has_cycle": false,
+    "external_blockers": {
+     "G1": [
+      "approv",
+      "security",
+      "audit"
+     ]
+    }
+   }
+  },
+  {
+   "id": "decisions_are_not_tasks",
+   "description": "Decisions and facts must not become tasks; one real commitment exists",
+   "meeting_date": "2026-11-25",
+   "transcript": "[16:00] Chair: We decided to move the database to Postgres.\n[16:01] Chair: Everyone agreed the launch date stays December 15.\n[16:02] Jo: I will send the migration plan tomorrow.",
+   "gold": {
+    "tasks": [
+     {
+      "id": "G1",
+      "keywords": [
+       "migration",
+       "plan"
+      ],
+      "owner": "Jo",
+      "deadline_date": "2026-11-26"
+     }
+    ],
+    "dependencies": [],
+    "has_cycle": false
+   }
+  }
+ ]
+}

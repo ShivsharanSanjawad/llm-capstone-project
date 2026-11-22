@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -6,19 +6,57 @@ import {
   MiniMap,
   MarkerType,
   useNodesState,
+  type Connection,
   type Edge,
   type Node,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { Graph, Task } from '../types';
 import { Empty } from './ui';
+import { api, errorMessage } from '../services/api';
 export default function DependencyGraph({
   graph,
   tasks,
+  meetingId,
+  onChanged,
 }: {
   graph?: Graph;
   tasks: Task[];
+  meetingId?: string;
+  onChanged?: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState('');
+  const [prerequisite, setPrerequisite] = useState('');
+  const [blocker, setBlocker] = useState('');
+  const [dependent, setDependent] = useState('');
+  const [selected, setSelected] = useState<{ source: string; target: string }>();
+  const taskIds = tasks.map((t) => t.task_id);
+  async function save(changes: Parameters<typeof api.editDependencies>[1]) {
+    if (!meetingId || saving) return;
+    setSaving(true);
+    setProblem('');
+    try {
+      await api.editDependencies(meetingId, changes);
+      setSelected(undefined);
+      setBlocker('');
+      onChanged?.();
+    } catch (e) {
+      setProblem(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const addDependency = (from: string, to: string) => {
+    const pre = from.trim();
+    if (!pre || !to) return setProblem('Choose a prerequisite and the task it blocks.');
+    if (pre === to) return setProblem('A task cannot depend on itself.');
+    void save({ add: [{ prerequisite: pre, task_id: to }] });
+  };
+  const onConnect = (c: Connection) => {
+    if (c.source && c.target && taskIds.includes(c.target)) addDependency(c.source, c.target);
+  };
   const model = useMemo(() => {
     const source = graph?.visualization_graph;
     const nodes: Node[] = (source?.nodes || []).map((n, i) => {
@@ -61,7 +99,9 @@ export default function DependencyGraph({
     });
     const edges: Edge[] = (source?.edges || []).map((e, i) => {
       const task = tasks.find((t) => t.task_id === e.target);
+      const manual = !!task?.manual_prerequisites?.includes(e.source);
       const inferred =
+        !manual &&
         !!task?.inferred_prerequisites?.includes(e.source) &&
         !task?.explicit_prerequisites?.includes(e.source);
       const isCycleEdge = !!graph?.circular_dependencies?.some(
@@ -72,17 +112,17 @@ export default function DependencyGraph({
         id: 'edge-' + i,
         source: e.source,
         target: e.target,
-        label: isCycleEdge ? 'cycle' : inferred ? 'inferred' : undefined,
+        label: isCycleEdge ? 'cycle' : manual ? 'manual' : inferred ? 'inferred' : undefined,
         style: {
           stroke: strokeColor,
-          strokeWidth: isCycleEdge ? 2.5 : 1.5,
+          strokeWidth: isCycleEdge || (selected && selected.source === e.source && selected.target === e.target) ? 3 : 1.5,
           strokeDasharray: !isCycleEdge && inferred ? '5 4' : undefined,
         },
         markerEnd: { type: MarkerType.ArrowClosed, color: strokeColor },
       };
     });
     return { nodes, edges };
-  }, [graph, tasks]);
+  }, [graph, tasks, selected]);
   const [nodes, setNodes, onNodesChange] = useNodesState(model.nodes);
   useEffect(() => setNodes(model.nodes), [model, setNodes]);
   if (!model.nodes.length)
@@ -109,8 +149,118 @@ export default function DependencyGraph({
       )}
       <p className="muted">
         Drag nodes, pan and zoom. Dashed edges indicate inferred dependencies.
-        Red edges indicate circular deadlocks. Relationships are read-only.
+        Red edges indicate circular deadlocks.
+        {meetingId
+          ? ' Use Edit dependencies to add or remove relationships; your changes are kept if the meeting is re-analysed.'
+          : ' Relationships are read-only.'}
       </p>
+      {meetingId && (
+        <div className="dep-editor">
+          <button
+            type="button"
+            className={editing ? 'primary' : ''}
+            onClick={() => {
+              setEditing(!editing);
+              setProblem('');
+              setSelected(undefined);
+            }}
+          >
+            {editing ? 'Done editing' : 'Edit dependencies'}
+          </button>
+          {editing && (
+            <div className="dep-editor-panel">
+              <p className="small muted">
+                Drag from the bottom handle of a prerequisite to the top handle of the task it blocks, click an arrow
+                to select it, or use the form.
+              </p>
+              <form
+                className="dep-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  addDependency(blocker || prerequisite, dependent);
+                }}
+              >
+                <label>
+                  Prerequisite (must finish first)
+                  <select
+                    value={prerequisite}
+                    disabled={!!blocker}
+                    onChange={(e) => setPrerequisite(e.target.value)}
+                  >
+                    <option value="">Choose a task…</option>
+                    {taskIds.map((id) => (
+                      <option key={id} value={id}>
+                        {id}: {tasks.find((t) => t.task_id === id)?.description.slice(0, 50)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  …or an outside blocker
+                  <input
+                    value={blocker}
+                    maxLength={120}
+                    placeholder="e.g. Client approval"
+                    onChange={(e) => setBlocker(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Blocks this task
+                  <select value={dependent} onChange={(e) => setDependent(e.target.value)}>
+                    <option value="">Choose a task…</option>
+                    {taskIds.map((id) => (
+                      <option key={id} value={id}>
+                        {id}: {tasks.find((t) => t.task_id === id)?.description.slice(0, 50)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="submit" className="primary" disabled={saving}>
+                  {saving ? 'Saving…' : 'Add dependency'}
+                </button>
+              </form>
+              {selected && (
+                <div className="notice warning">
+                  Selected: <strong>{selected.source} ➔ {selected.target}</strong>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() =>
+                      save({ remove: [{ prerequisite: selected.source, task_id: selected.target }] })
+                    }
+                  >
+                    Remove this dependency
+                  </button>
+                </div>
+              )}
+              <ul className="dep-list">
+                {model.edges.length === 0 && <li className="muted small">No dependencies yet.</li>}
+                {model.edges.map((e) => (
+                  <li key={e.id}>
+                    <span>
+                      <strong>{e.source}</strong> ➔ <strong>{e.target}</strong>
+                      {e.label ? <small> {String(e.label)}</small> : null}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Remove dependency ${e.source} to ${e.target}`}
+                      disabled={saving}
+                      onClick={() => save({ remove: [{ prerequisite: e.source, task_id: e.target }] })}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {problem && (
+                <div className="notice danger" role="alert">
+                  {problem}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Feasibility Status Banner */}
       {hasUnresolvedCycles ? (
@@ -249,8 +399,10 @@ export default function DependencyGraph({
           nodes={nodes}
           edges={model.edges}
           onNodesChange={onNodesChange}
-          nodesConnectable={false}
+          nodesConnectable={editing}
           edgesReconnectable={false}
+          onConnect={onConnect}
+          onEdgeClick={(_, edge) => editing && setSelected({ source: edge.source, target: edge.target })}
           fitView
         >
           <Background color="#d4ccbd" />

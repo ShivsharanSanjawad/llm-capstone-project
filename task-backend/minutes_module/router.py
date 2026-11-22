@@ -76,6 +76,31 @@ class Runtime:
                 self._jobs.pop(job_key, None)
 
     async def _generate(self, request, tasks=None, expected=None, source_segments=None, force=False, fingerprint=None):
+        import tracking
+        import pipeline_metrics
+        trace = tracking.begin("generate_minutes", model=self.llm.model, provider=self.llm.provider,
+                               context_tokens=self.settings.context_tokens, chunk_tokens=self.settings.chunk_tokens,
+                               verification=self.settings.enable_verification, force_refresh=force)
+        status, error = "succeeded", None
+        try:
+            with trace.step("generate_verify_store") as step:
+                revision = await self._generate_inner(request, tasks, expected, source_segments, force, fingerprint)
+                step.update(pipeline_metrics.minutes_stats(revision.minutes, revision.verification))
+                step["segments"] = len(revision.segments)
+                step["chunks"] = revision.generation.get("chunk_count", 0)
+                step["revision"] = revision.revision
+            trace.tag("meeting_id", revision.meeting_id)
+            return revision
+        except HTTPException as exc:
+            status, error = "failed", f"HTTP {exc.status_code}"
+            raise
+        except BaseException as exc:
+            status, error = "failed", type(exc).__name__
+            raise
+        finally:
+            await trace.finish(status, error)
+
+    async def _generate_inner(self, request, tasks=None, expected=None, source_segments=None, force=False, fingerprint=None):
         meeting_id = request.meeting.id or str(uuid4())
         request.meeting.id = meeting_id
         record = self.monitor.begin(meeting_id, self.llm.provider, self.llm.model)

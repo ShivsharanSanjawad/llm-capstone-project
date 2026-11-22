@@ -653,7 +653,12 @@ export default function MeetingDetail() {
         )}
         {tab === 'dependencies' && (
           <div className="document">
-            <DependencyGraph graph={doc.graph_analysis} tasks={tasksOf(doc)} />
+            <DependencyGraph
+              graph={doc.graph_analysis}
+              tasks={tasksOf(doc)}
+              meetingId={doc._id}
+              onChanged={data.reload}
+            />
           </div>
         )}
         {tab === 'transcript' && (

@@ -24,6 +24,10 @@ export class ApiError extends Error {
   }
 }
 const messages: Record<string, string> = {
+  self_dependency: 'A task cannot depend on itself.',
+  dependencies_not_analyzed:
+    'Run the analysis for this meeting first; there are no analysed tasks to edit.',
+  dependency_write_failed: 'The dependency change could not be saved. Try again.',
   meeting_delete_failed:
     'Atlas could not confirm deletion. Refresh the meeting list before retrying.',
   incomplete_or_refused_output:
@@ -235,6 +239,17 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ meeting_title }),
       }
+    ),
+  editDependencies: (
+    meetingId: string,
+    changes: {
+      add?: { prerequisite: string; task_id: string }[];
+      remove?: { prerequisite: string; task_id: string }[];
+    }
+  ) =>
+    request<{ status: string; meeting_id: string }>(
+      '/api/meetings/' + id(meetingId) + '/dependencies',
+      { method: 'PATCH', body: JSON.stringify(changes) }
     ),
   health: () => request<Health>(minutes + '/health'),
   async meetings(): Promise<MeetingDoc[]> {

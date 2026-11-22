@@ -8,3 +8,5 @@
 .delete-button{color:var(--danger);border-color:#e3c6bd;font-size:.75rem;white-space:nowrap}.delete-button:hover{background:#f9eeea}
 
 .date-filter{flex:0 0 auto}.date-filter input{padding:9px 10px;font-size:.8rem}.filters>.small{width:100%}
+
+.dep-editor{margin:14px 0}.dep-editor-panel{margin-top:14px;padding:16px;border:1px solid var(--border);border-radius:6px;background:#f4f0e6}.dep-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:end;margin:12px 0}.dep-list{list-style:none;margin:14px 0 0;padding:0;font-size:.78rem}.dep-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #e8e2d6}.dep-list li:last-child{border-bottom:0}.dep-list button{padding:5px 10px;font-size:.7rem}

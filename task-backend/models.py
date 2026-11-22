@@ -1,7 +1,31 @@
 # models.py
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Any
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from typing import Dict, List, Optional, Literal
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "; ".join(_text(v) for v in value if v is not None)
+    return str(value)
+
+
+def _text_dict(value: Any) -> Any:
+    """Models sometimes put a number, null or a list where a string belongs. Coerce instead of failing the whole analysis."""
+    return {str(k): _text(v) for k, v in value.items()} if isinstance(value, dict) else value
+
+
+def _text_list(value: Any) -> Any:
+    return [_text(v) for v in value if v is not None] if isinstance(value, (list, tuple)) else value
+
+
+TextDict = Annotated[Dict[str, str], BeforeValidator(_text_dict)]
+TextList = Annotated[List[str], BeforeValidator(_text_list)]
+
+
 class ExplicitTask(BaseModel):
     task_id: str = Field(description="Unique identifier for the task, e.g., T1")
     description: str = Field(description="A concise, action-oriented description of the work, excluding first-person phrasing and task-number introductions based on the transcript")
@@ -24,11 +48,12 @@ class FactualExtraction(BaseModel):
     tasks: List[ExplicitTask]
 
 def _require_deadline_date(schema: dict) -> None:
-    # Optional for validation (an answer without it is still accepted and handled by the calendar rules),
-    # but listed as required in the schema the model sees, so it reliably fills it in.
+    # Optional for validation (an answer without them is still accepted and handled by code),
+    # but listed as required in the schema the model sees, so it reliably fills them in.
     required = schema.setdefault("required", [])
-    if "deadline_date" not in required:
-        required.append("deadline_date")
+    for name in ("deadline_date", "llm_importance", "priority_reason"):
+        if name not in required:
+            required.append(name)
 
 
 class EnrichedTask(BaseModel):
@@ -44,15 +69,23 @@ class EnrichedTask(BaseModel):
         description="The exact calendar date (YYYY-MM-DD) the deadline refers to, worked out from meeting_date and the supplied calendar. Null when no date can be determined."
     )
     missing_deadline: bool = Field(description="Set to True if no deadline was stated or implied.")
-    priority: Literal["Low", "Medium", "High"] = Field(description="Infer priority based on urgency words, deadlines, and project context.")
-    explicit_prerequisites: List[str] = Field(
+    priority: Literal["Low", "Medium", "High"] = Field(description="Your own priority label from urgency words, deadlines and project context. The final priority is recomputed as a score from this, the deadline and how many tasks it blocks.")
+    llm_importance: Optional[int] = Field(
+        default=None, ge=0, le=10,
+        description="How important and urgent this task is from the discussion alone, 0 (trivial) to 10 (critical): urgency words, stated stakes, risk if delayed, customer or release impact. Do not consider the due date or dependencies; those are scored separately."
+    )
+    priority_reason: Optional[str] = Field(
+        default=None,
+        description="One short sentence quoting or paraphrasing what in the meeting justifies llm_importance."
+    )
+    explicit_prerequisites: TextList = Field(
             description="List of task IDs (e.g., 'T1') OR string descriptions of external blockers (e.g., 'Waiting on AWS support') explicitly stated as prerequisites."
         )
-    inferred_prerequisites: List[str] = Field(
+    inferred_prerequisites: TextList = Field(
         default_factory=list, 
         description="Task IDs OR string descriptions of external blockers that logically must happen first, even if not explicitly stated."
     )
-    dependency_evidence: List[Dict[str, str]] = Field(
+    dependency_evidence: List[TextDict] = Field(
         default_factory=list,
         description="For each dependency between tracked tasks, provide prerequisite_task_id, task_id (the dependent task), and the verbatim transcript statement supporting that dependency."
     )
@@ -63,11 +96,11 @@ class EnrichedTask(BaseModel):
 
 class ContextualInference(BaseModel):
     enriched_tasks: List[EnrichedTask]
-    initial_circular_dependencies: List[Dict[str, str]] = Field(
+    initial_circular_dependencies: List[TextDict] = Field(
         default_factory=list,
         description="Each dependency edge in every original transcript cycle. from_task_id is the prerequisite, to_task_id is the dependent task, and description is the verbatim supporting transcript statement."
     )
-    resolved_dependencies: List[Dict[str, str]] = Field(
+    resolved_dependencies: List[TextDict] = Field(
         default_factory=list,
         description="Agreements or execution steps that resolved the original circular dependencies. Each item should explain the resolution and affected task IDs."
     )

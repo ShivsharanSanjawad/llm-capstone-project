@@ -84,6 +84,26 @@ export default function TaskTable({
                   </td>
                   <td>
                     {t.priority ? <Badge>{t.priority}</Badge> : 'Not inferred'}
+                    {typeof t.priority_score === 'number' && (
+                      <>
+                        <small title="Priority score out of 100">
+                          <strong>{t.priority_score}</strong>/100
+                        </small>
+                        {t.priority_breakdown && (
+                          <small
+                            title={(
+                              Object.entries(t.priority_breakdown) as [string, { points: number; max: number; why: string }][]
+                            )
+                              .map(([k, v]) => `${k}: ${v.points}/${v.max} (${v.why})`)
+                              .join('\n')}
+                          >
+                            deadline {t.priority_breakdown.deadline.points} · blocks{' '}
+                            {t.priority_breakdown.dependencies.points} · AI{' '}
+                            {t.priority_breakdown.model.points}
+                          </small>
+                        )}
+                      </>
+                    )}
                   </td>
                   <td>
                     <span>

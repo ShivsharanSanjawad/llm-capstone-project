@@ -31,6 +31,12 @@ class Monitor:
             return
         record.update(status=status, error_type=error, completed_at=utcnow(), duration_seconds=round(monotonic()-record.pop("_clock"), 3))
         logger.info(json.dumps(record))
+        try:   # attach this LLM request to the pipeline trace (MLflow), if one is running
+            import tracking
+            from .pricing import estimate_cost, load_overrides
+            tracking.record_llm({**record, **(estimate_cost(record, load_overrides(self._pricing_file)) or {})})
+        except Exception:
+            pass
         try:
             await self.collection.replace_one({"_id":record["request_id"]}, dict(record), upsert=True)
         except Exception:

@@ -1,0 +1,419 @@
+{
+ "generated_at": "2026-11-22 20:58:04 IST",
+ "dataset": {
+  "name": "meeting-intelligence-gold-v1",
+  "sha": "f3350cd31f1b",
+  "cases": 6
+ },
+ "deterministic": [
+  {
+   "name": "Deadline resolution",
+   "what": "Spoken deadlines turned into exact calendar dates (meeting on Wed 25 Nov 2026)",
+   "total": 33,
+   "passed": 33,
+   "accuracy": 1.0,
+   "failures": []
+  },
+  {
+   "name": "Deadline reconciliation",
+   "what": "Model-proposed dates validated and repaired by the calendar rules",
+   "total": 12,
+   "passed": 12,
+   "accuracy": 1.0,
+   "failures": []
+  },
+  {
+   "name": "Participant filtering",
+   "what": "Real names kept, Google Meet interface text rejected",
+   "total": 28,
+   "passed": 28,
+   "accuracy": 1.0,
+   "failures": []
+  },
+  {
+   "name": "Transcript parsing",
+   "what": "Speaker, timestamp and text split correctly; labels like Note/Time are not speakers",
+   "total": 14,
+   "passed": 14,
+   "accuracy": 1.0,
+   "failures": []
+  },
+  {
+   "name": "Dependency graph engine",
+   "what": "Cycle detection, feasibility and bottleneck ranking on known graphs",
+   "total": 7,
+   "passed": 7,
+   "accuracy": 1.0,
+   "failures": []
+  },
+  {
+   "name": "Priority scoring",
+   "what": "Properties of the 0-100 priority score (monotonic in urgency, blocking and importance)",
+   "total": 7,
+   "passed": 7,
+   "accuracy": 1.0,
+   "failures": []
+  },
+  {
+   "name": "Minutes evidence verification",
+   "what": "Fabricated or misplaced quotes are caught; decisions need a human",
+   "total": 7,
+   "passed": 7,
+   "accuracy": 1.0,
+   "failures": []
+  }
+ ],
+ "live": {
+  "model": "openai/gpt-oss-120b",
+  "provider": "groq",
+  "summary": {
+   "task_extraction": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+   },
+   "hallucination_rate": 0.0,
+   "owner_accuracy": 1.0,
+   "deadline_exact_date_accuracy": 1.0,
+   "invented_deadlines": 0,
+   "dependency_edges": {
+    "precision": 1.0,
+    "recall": 0.75,
+    "f1": 0.857
+   },
+   "cycle_detection": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+   },
+   "external_blocker_recall": 1.0,
+   "no_task_cases_clean": 1.0,
+   "cases": 5,
+   "evidence_grounded_rate": 1.0,
+   "evidence_quotes": 5,
+   "failed_cases": 1,
+   "latency_p50_s": 21.44,
+   "latency_max_s": 30.41,
+   "tokens_per_meeting": 4156,
+   "cost_per_meeting_usd": 0.00142,
+   "retries": 6
+  },
+  "cases": [
+   {
+    "case": "sprint_planning",
+    "predicted_tasks": 3,
+    "gold_tasks": 3,
+    "task_tp": 3,
+    "task_fp": 0,
+    "task_fn": 0,
+    "owner_total": 3,
+    "owner_ok": 3,
+    "deadline_total": 3,
+    "deadline_ok": 3,
+    "deadline_invented": 0,
+    "edge_tp": 0,
+    "edge_fp": 0,
+    "edge_fn": 0,
+    "cycle_predicted": 0,
+    "cycle_gold": 0,
+    "blocker_total": 0,
+    "blocker_found": 0,
+    "misses": [],
+    "error": null,
+    "seconds": 3.03,
+    "input_tokens": 3512,
+    "output_tokens": 831,
+    "llm_calls": 2,
+    "retries": 0,
+    "cost_usd": 0.001025,
+    "evidence": {
+     "explicit_edges": 0,
+     "inferred_edges": 0,
+     "manual_edges": 0,
+     "external_blockers": 0,
+     "evidence_quotes": 0
+    },
+    "tasks": [
+     {
+      "id": "T1",
+      "description": "Finish the login page",
+      "owner": "Rahul",
+      "deadline": "by Friday",
+      "deadline_date": "2026-11-27",
+      "priority": "Medium",
+      "priority_score": 53
+     },
+     {
+      "id": "T2",
+      "description": "Write the user data API",
+      "owner": "Amit",
+      "deadline": "within five days",
+      "deadline_date": "2026-11-30",
+      "priority": "Medium",
+      "priority_score": 40
+     },
+     {
+      "id": "T3",
+      "description": "Prepare the release notes",
+      "owner": "Priya",
+      "deadline": "by the end of the month",
+      "deadline_date": "2026-11-30",
+      "priority": "Medium",
+      "priority_score": 40
+     }
+    ]
+   },
+   {
+    "case": "circular_deadlock",
+    "predicted_tasks": 2,
+    "gold_tasks": 2,
+    "task_tp": 2,
+    "task_fp": 0,
+    "task_fn": 0,
+    "owner_total": 2,
+    "owner_ok": 2,
+    "deadline_total": 2,
+    "deadline_ok": 2,
+    "deadline_invented": 0,
+    "edge_tp": 1,
+    "edge_fp": 0,
+    "edge_fn": 1,
+    "cycle_predicted": 1,
+    "cycle_gold": 1,
+    "blocker_total": 0,
+    "blocker_found": 0,
+    "misses": [
+     "missed dependency G1 -> G2"
+    ],
+    "error": null,
+    "seconds": 3.36,
+    "input_tokens": 3412,
+    "output_tokens": 1216,
+    "llm_calls": 2,
+    "retries": 0,
+    "cost_usd": 0.001241,
+    "evidence": {
+     "explicit_edges": 1,
+     "inferred_edges": 0,
+     "manual_edges": 0,
+     "external_blockers": 0,
+     "evidence_quotes": 2,
+     "evidence_grounded_rate": 1.0
+    },
+    "tasks": [
+     {
+      "id": "T1",
+      "description": "Send the API keys",
+      "owner": "Kunal",
+      "deadline": "by tomorrow",
+      "deadline_date": "2026-11-26",
+      "priority": "High",
+      "priority_score": 76
+     },
+     {
+      "id": "T2",
+      "description": "Finish the payment module",
+      "owner": "Amit",
+      "deadline": "within three days",
+      "deadline_date": "2026-11-28",
+      "priority": "High",
+      "priority_score": 59
+     }
+    ]
+   },
+   {
+    "case": "small_talk",
+    "predicted_tasks": 0,
+    "gold_tasks": 0,
+    "task_tp": 0,
+    "task_fp": 0,
+    "task_fn": 0,
+    "owner_total": 0,
+    "owner_ok": 0,
+    "deadline_total": 0,
+    "deadline_ok": 0,
+    "deadline_invented": 0,
+    "edge_tp": 0,
+    "edge_fp": 0,
+    "edge_fn": 0,
+    "cycle_predicted": 0,
+    "cycle_gold": 0,
+    "blocker_total": 0,
+    "blocker_found": 0,
+    "misses": [],
+    "error": null,
+    "seconds": 21.44,
+    "input_tokens": 3215,
+    "output_tokens": 95,
+    "llm_calls": 4,
+    "retries": 2,
+    "cost_usd": 0.001316,
+    "evidence": {
+     "explicit_edges": 0,
+     "inferred_edges": 0,
+     "manual_edges": 0,
+     "external_blockers": 0,
+     "evidence_quotes": 0
+    },
+    "tasks": []
+   },
+   {
+    "case": "dependency_chain",
+    "predicted_tasks": 3,
+    "gold_tasks": 3,
+    "task_tp": 3,
+    "task_fp": 0,
+    "task_fn": 0,
+    "owner_total": 3,
+    "owner_ok": 3,
+    "deadline_total": 1,
+    "deadline_ok": 1,
+    "deadline_invented": 0,
+    "edge_tp": 2,
+    "edge_fp": 0,
+    "edge_fn": 0,
+    "cycle_predicted": 0,
+    "cycle_gold": 0,
+    "blocker_total": 0,
+    "blocker_found": 0,
+    "misses": [],
+    "error": null,
+    "seconds": 30.41,
+    "input_tokens": 3430,
+    "output_tokens": 1083,
+    "llm_calls": 4,
+    "retries": 2,
+    "cost_usd": 0.00145,
+    "evidence": {
+     "explicit_edges": 2,
+     "inferred_edges": 0,
+     "manual_edges": 0,
+     "external_blockers": 0,
+     "evidence_quotes": 2,
+     "evidence_grounded_rate": 1.0
+    },
+    "tasks": [
+     {
+      "id": "T1",
+      "description": "Prepare the dataset",
+      "owner": "Dana",
+      "deadline": "by Thursday",
+      "deadline_date": "2026-11-26",
+      "priority": "High",
+      "priority_score": 80
+     },
+     {
+      "id": "T2",
+      "description": "Build the charts",
+      "owner": "Lee",
+      "deadline": null,
+      "deadline_date": null,
+      "priority": "Medium",
+      "priority_score": 33
+     },
+     {
+      "id": "T3",
+      "description": "Write the summary",
+      "owner": "Maya",
+      "deadline": null,
+      "deadline_date": null,
+      "priority": "Low",
+      "priority_score": 18
+     }
+    ]
+   },
+   {
+    "case": "external_blocker",
+    "predicted_tasks": 2,
+    "gold_tasks": 2,
+    "task_tp": 2,
+    "task_fp": 0,
+    "task_fn": 0,
+    "owner_total": 2,
+    "owner_ok": 2,
+    "deadline_total": 1,
+    "deadline_ok": 1,
+    "deadline_invented": 0,
+    "edge_tp": 0,
+    "edge_fp": 0,
+    "edge_fn": 0,
+    "cycle_predicted": 0,
+    "cycle_gold": 0,
+    "blocker_total": 1,
+    "blocker_found": 1,
+    "misses": [],
+    "error": null,
+    "seconds": 27.13,
+    "input_tokens": 3294,
+    "output_tokens": 691,
+    "llm_calls": 4,
+    "retries": 2,
+    "cost_usd": 0.002056,
+    "evidence": {
+     "explicit_edges": 1,
+     "inferred_edges": 0,
+     "manual_edges": 0,
+     "external_blockers": 1,
+     "evidence_quotes": 1,
+     "evidence_grounded_rate": 1.0
+    },
+    "tasks": [
+     {
+      "id": "T1",
+      "description": "Deploy the service to production",
+      "owner": "Ravi",
+      "deadline": null,
+      "deadline_date": null,
+      "priority": "Low",
+      "priority_score": 28
+     },
+     {
+      "id": "T2",
+      "description": "Update the runbook",
+      "owner": "Tara",
+      "deadline": "in two weeks",
+      "deadline_date": "2026-12-09",
+      "priority": "Medium",
+      "priority_score": 32
+     }
+    ]
+   },
+   {
+    "case": "decisions_are_not_tasks",
+    "predicted_tasks": 0,
+    "gold_tasks": 1,
+    "task_tp": 0,
+    "task_fp": 0,
+    "task_fn": 1,
+    "owner_total": 0,
+    "owner_ok": 0,
+    "deadline_total": 0,
+    "deadline_ok": 0,
+    "deadline_invented": 0,
+    "edge_tp": 0,
+    "edge_fp": 0,
+    "edge_fn": 0,
+    "cycle_predicted": 0,
+    "cycle_gold": 0,
+    "blocker_total": 0,
+    "blocker_found": 0,
+    "misses": [],
+    "error": "HTTPException: {'code': 'provider_quota_exhausted', 'request_id': '9322d7da-f080-4154-b895-bcd464f361aa', 'upstream_status': 429}",
+    "seconds": 0.79,
+    "input_tokens": 740,
+    "output_tokens": 159,
+    "llm_calls": 2,
+    "retries": 0,
+    "cost_usd": 0.000706,
+    "evidence": {
+     "explicit_edges": 0,
+     "inferred_edges": 0,
+     "manual_edges": 0,
+     "external_blockers": 0,
+     "evidence_quotes": 0
+    },
+    "tasks": []
+   }
+  ]
+ }
+}

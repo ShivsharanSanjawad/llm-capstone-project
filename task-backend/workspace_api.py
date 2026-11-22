@@ -2,12 +2,15 @@
 import asyncio
 import re
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
 from database import database, meeting_query, get_meeting_doc, delete_meeting_doc
 from graph_engine import analyze_task_graph
+from dependency_edits import apply_edits, merge_edit
+from deadlines import reference_date
+from priority import apply_priority
 from minutes_module.schemas import Claim, Evidence, Segment, Revision
 from minutes_module.llm_service import LLMError
 from minutes_module.transcript_processor import normalize
@@ -19,6 +22,14 @@ from minutes_module.export_service import saved_tasks
 class StatusUpdate(BaseModel):
     status: Literal["pending", "in progress", "completed", "blocked"]
     expected_revision: int = Field(default=0, ge=0)
+
+class DependencyRef(BaseModel):
+    prerequisite: str = Field(min_length=1, max_length=120)
+    task_id: str = Field(min_length=1, max_length=40)
+
+class DependencyEdit(BaseModel):
+    add: list[DependencyRef] = Field(default_factory=list, max_length=50)
+    remove: list[DependencyRef] = Field(default_factory=list, max_length=50)
 
 class Question(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
@@ -114,7 +125,7 @@ def deterministic_answer(question, doc, revision, segments):
                     text += ". Deadline: " + deadline
                 if intent=="tasks":
                     if task.get("priority"):
-                        text += ". Priority: " + task["priority"]
+                        text += ". Priority: " + task["priority"] + (f" ({task['priority_score']}/100)" if task.get("priority_score") is not None else "")
                     if task.get("status"):
                         text += ". Status: " + task["status"]
                 is_inferred = bool(task.get("owner_inferred") or task.get("deadline_inferred"))
@@ -175,6 +186,42 @@ def create_workspace_router(runtime):
         except Exception:
             pass
         return {"status": "success", "meeting_id": meeting_id, "meeting_title": new_title}
+
+    @router.patch("/meetings/{meeting_id}/dependencies")
+    async def edit_dependencies(meeting_id: str, request: DependencyEdit):
+        doc=await get_meeting_doc(meeting_id)
+        if not doc:
+            raise HTTPException(404,detail={"code":"meeting_not_found"})
+        tasks=doc.get("enriched_tasks")
+        if not tasks:
+            raise HTTPException(409,detail={"code":"dependencies_not_analyzed"})
+        ids={str(t["task_id"]) for t in tasks if t.get("task_id")}
+        refs=[]
+        for row in request.add+request.remove:
+            row.prerequisite=row.prerequisite.strip(); row.task_id=row.task_id.strip()
+            if row.task_id not in ids:
+                raise HTTPException(404,detail={"code":"task_not_found","task_id":row.task_id})
+            if row.prerequisite==row.task_id:
+                raise HTTPException(422,detail={"code":"self_dependency","task_id":row.task_id})
+        for row in request.add:
+            if not row.prerequisite:
+                raise HTTPException(422,detail={"code":"empty_prerequisite"})
+        edits=merge_edit(doc.get("dependency_edits"),[r.model_dump() for r in request.add],[r.model_dump() for r in request.remove])
+        tasks=apply_edits([dict(t) for t in tasks],edits)
+        day=reference_date(doc.get("date") or doc.get("created_at"),datetime.now(timezone(timedelta(hours=5,minutes=30))))
+        apply_priority(tasks,day)
+        previous=doc.get("graph_analysis") or {}
+        graph=analyze_task_graph(tasks,{"initial_circular_dependencies":previous.get("initial_circular_dependencies",[]),
+            "resolved_dependencies":previous.get("resolved_dependencies",[])})
+        updates={"enriched_tasks":tasks,"graph_analysis":graph,"dependency_edits":edits,
+                 "updated_at":datetime.now(timezone.utc).isoformat()}
+        try:
+            result=await database.collection("factual_tasks").update_one(meeting_query(meeting_id),{"$set":updates})
+        except Exception:
+            raise HTTPException(503,detail={"code":"dependency_write_failed"}) from None
+        if not result.matched_count:
+            raise HTTPException(404,detail={"code":"meeting_not_found"})
+        return {"status":"success","meeting_id":meeting_id,"enriched_tasks":tasks,"graph_analysis":graph,"dependency_edits":edits}
 
     @router.patch("/meetings/{meeting_id}/tasks/{task_id}/status")
     async def update_status(meeting_id: str, task_id: str, request: StatusUpdate):

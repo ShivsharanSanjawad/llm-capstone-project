@@ -216,3 +216,27 @@ describe('exact deadlines and scraped names', () => {
     ).toEqual(['Shivsharan Sanjawad', 'Madhukar Pai']);
   });
 });
+
+describe('priority score', () => {
+  it('keeps the score and its breakdown on the task', () => {
+    const meeting = {
+      _id: 'm1',
+      enriched_tasks: [
+        {
+          task_id: 'T1',
+          description: 'x',
+          priority: 'High',
+          priority_score: 64,
+          priority_breakdown: {
+            deadline: { points: 32, max: 35, why: 'due 1 day after the meeting' },
+            dependencies: { points: 0, max: 30, why: 'blocks nothing' },
+            model: { points: 32, max: 35, why: 'model importance 9/10' },
+          },
+        },
+      ],
+    } as unknown as MeetingDoc;
+    const [t] = tasksOf(meeting);
+    expect(t.priority_score).toBe(64);
+    expect(t.priority_breakdown?.model.points).toBe(32);
+  });
+});

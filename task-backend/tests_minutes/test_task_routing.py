@@ -113,3 +113,18 @@ def test_monitoring_write_failure_never_fails_the_request(monkeypatch, fake_data
     monkeypatch.setattr(main, "llm_service", llm)
     monkeypatch.setattr(main.task_monitor, "finish", AsyncMock(side_effect=HTTPException(503)))
     assert asyncio.run(main.run_factual_extraction("text")).tasks
+
+
+def test_sloppy_model_values_are_coerced_instead_of_failing_the_analysis():
+    from models import ContextualInference
+    parsed = ContextualInference.model_validate({
+        "enriched_tasks": [{
+            "task_id": "T1", "description": "d", "owner": None, "missing_owner": True, "deadline": None, "missing_deadline": True,
+            "priority": "Low", "explicit_prerequisites": ["T2", 3, None],
+            "dependency_evidence": [{"prerequisite_task_id": "T2", "task_id": "T1", "evidence": None, "note": ["a", "b"], "n": 5}]}],
+        "initial_circular_dependencies": [{"from_task_id": "T1", "to_task_id": 2, "description": None}],
+    })
+    task = parsed.enriched_tasks[0]
+    assert task.explicit_prerequisites == ["T2", "3"]
+    assert task.dependency_evidence[0] == {"prerequisite_task_id": "T2", "task_id": "T1", "evidence": "", "note": "a; b", "n": "5"}
+    assert parsed.initial_circular_dependencies[0]["to_task_id"] == "2"

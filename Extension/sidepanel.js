@@ -550,7 +550,7 @@ function renderTasks(tasks, enriched) {
           <div class="task-top">
             <span class="task-id">${taskId}</span>
             <div class="task-badges">
-              <span class="badge badge-${priority}">${priority}</span>
+              <span class="badge badge-${priority}">${priority}${Number.isFinite(task.priority_score) ? ` · ${task.priority_score}/100` : ""}</span>
               <span class="badge badge-status">${status}</span>
             </div>
           </div>

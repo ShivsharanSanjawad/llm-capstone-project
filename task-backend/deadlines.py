@@ -81,7 +81,7 @@ def _absolute(text: str, ref: date) -> Optional[date]:
 
 _ARITHMETIC = re.compile(
     r"\b(day after tomorrow|tomorrow|today|tonight|eod)\b|"
-    r"\b(?:within|in|after|by|for|over|next)?\s*" + _NUM + r"\s+(?:business |working )?(?:days?|weeks?|months?|hours?)\b")
+    r"\b(?:within|in|after|by|for|over|next)?\s*" + _NUM + r"(?:\s+of)?\s+(?:business |working )?(?:days?|weeks?|months?|hours?)\b")
 
 
 def analyze(text: Optional[str], reference: date) -> Tuple[List[date], bool]:
@@ -107,7 +107,7 @@ def analyze(text: Optional[str], reference: date) -> Tuple[List[date], bool]:
         return [reference], True
 
     relative = re.search(
-        r"\b(?:within|in|after|by|for|over|next)?\s*" + _NUM + r"\s+(business |working )?(days?|weeks?|months?|hours?)\b", t)
+        r"\b(?:within|in|after|by|for|over|next)?\s*" + _NUM + r"(?:\s+of)?\s+(business |working )?(days?|weeks?|months?|hours?)\b", t)
     if relative:
         amount, business, unit = _count(relative[1]), relative[2], relative[3]
         if unit.startswith("hour"):

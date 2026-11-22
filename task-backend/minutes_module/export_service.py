@@ -105,7 +105,10 @@ def task_cells(task):
         if field == "deadline" and task.get("deadline_label"):
             text = f"{task['deadline_label']} ({text})"   # exact date first, spoken wording in brackets
         return str(text) + (" (inferred)" if task.get(field+"_inferred") else "")
-    return [str(task["description"]), value("owner"), value("deadline"), value("priority"), value("status")]
+    priority = value("priority")
+    if task.get("priority_score") is not None:
+        priority = f"{task.get('priority') or 'Not recorded'} ({task['priority_score']}/100)"
+    return [str(task["description"]), value("owner"), value("deadline"), priority, value("status")]
 
 
 def export(revision, kind, meeting_doc=None):
