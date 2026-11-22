@@ -15,7 +15,8 @@ export function tasksOf(meeting: MeetingDoc): Task[] {
   return source.map((t) => ({
     ...t,
     owner: t.owner ?? t.explicit_owner,
-    deadline: t.deadline ?? t.explicit_deadline,
+    deadline: t.deadline_date ?? t.deadline ?? t.explicit_deadline,
+    deadline_source: t.deadline_source ?? (t.deadline_date ? (t.deadline ?? t.explicit_deadline) : undefined),
     status: overrides.get(t.task_id) || t.status,
   }));
 }
@@ -35,7 +36,7 @@ export function dateLabel(value?: string | null) {
 }
 // Google Meet button text that older saved meetings may carry as "participants" (mirrors the backend filter).
 const UI_TEXT =
-  /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|someone else|can't|cannot|you can|options|menu|settings|meeting|joined|left|waiting|admit|deny|transcript|speaker|note|notes|action|summary|agenda|topic|decision|todo)\b/i;
+  /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|someone else|can't|cannot|you can|options|menu|settings|meeting|joined|left|waiting|admit|deny|transcript|speaker|note|notes|action|summary|agenda|topic|decision|todo|everyone|annotations?|can see|see your|your (screen|video|audio)|recording|breakout|polls?|whiteboard|host controls?)\b/i;
 export function isPersonName(name: string): boolean {
   const n = name.trim();
   if (n.length < 2 || n.length > 40 || n.split(/\s+/).length > 5) return false;

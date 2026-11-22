@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, errorMessage } from '../services/api';
-import { taskStatus, tasksOf } from '../services/data';
+import { absoluteDeadline, dateLabel, taskStatus, tasksOf } from '../services/data';
 import type { MeetingDoc, Task, TaskStatus } from '../types';
 import { Badge, Empty, ErrorNotice } from './ui';
 export type TaskRow = Task & { meeting: MeetingDoc };
@@ -67,7 +67,17 @@ export default function TaskTable({
                     {t.missing_owner && <small>Owner uncertain</small>}
                   </td>
                   <td>
-                    {t.deadline || (
+                    {t.deadline ? (
+                      absoluteDeadline(t.deadline) !== null ? (
+                        <>
+                          <strong>{dateLabel(t.deadline)}</strong>
+                          {t.deadline_source && <small>said: “{t.deadline_source}”</small>}
+                          {t.deadline_note && <small className="warning-text">{t.deadline_note}</small>}
+                        </>
+                      ) : (
+                        t.deadline
+                      )
+                    ) : (
                       <span className="warning-text">Not stated</span>
                     )}
                     {t.missing_deadline && <small>Deadline uncertain</small>}

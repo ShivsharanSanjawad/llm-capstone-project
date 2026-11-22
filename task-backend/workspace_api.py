@@ -101,6 +101,8 @@ def deterministic_answer(question, doc, revision, segments):
             for task in tasks:
                 owner = task.get("owner") or "not recorded"
                 deadline = task.get("deadline") or "not recorded"
+                if task.get("deadline_label"):
+                    deadline = f"{task['deadline_label']} ({deadline})"
                 if task.get("owner_inferred"):
                     owner += " (inferred)"
                 if task.get("deadline_inferred"):

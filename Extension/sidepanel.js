@@ -112,7 +112,7 @@ function addEntry(text, timestamp) {
 }
 
 // Auto-fill the Participants field with speaker names captured from Meet
-const PARTICIPANT_UI_TEXT = /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|someone else|can't|cannot|you can|options|menu|settings|meeting)\b/i;
+const PARTICIPANT_UI_TEXT = /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|someone else|can't|cannot|you can|options|menu|settings|meeting|everyone|annotations?|can see|see your|your (screen|video|audio)|recording|breakout|polls?|whiteboard|host controls?)\b/i;
 function addParticipant(name) {
   const n = (name || "").trim();
   if (!n || /^you$/i.test(n)) return;
@@ -516,7 +516,7 @@ function renderTasks(tasks, enriched) {
             ? escapeHtml(task.explicit_owner)
             : "Not specified";
           const deadline = task.explicit_deadline
-            ? escapeHtml(task.explicit_deadline)
+            ? (task.deadline_label ? `<strong>${escapeHtml(task.deadline_label)}</strong> (${escapeHtml(task.explicit_deadline)})` : escapeHtml(task.explicit_deadline))
             : "Not specified";
           const prerequisites = task.explicit_prerequisites || [];
           return `<article class="task-item factual-task">
@@ -540,7 +540,7 @@ function renderTasks(tasks, enriched) {
           ? escapeHtml(task.owner)
           : task.missing_owner ? "<em>Unassigned</em>" : "—";
         const deadline = task.deadline
-          ? escapeHtml(task.deadline)
+          ? (task.deadline_label ? `<strong>${escapeHtml(task.deadline_label)}</strong> (${escapeHtml(task.deadline)})` : escapeHtml(task.deadline))
           : task.missing_deadline ? "<em>No deadline</em>" : "—";
         const prereqs = [
           ...(task.explicit_prerequisites || []),

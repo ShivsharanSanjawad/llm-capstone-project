@@ -95,7 +95,7 @@
   // ── Names: own name + participants (independent of recording) ─────────────
   const isYou = (n) => /^(you|me)$/i.test((n || "").trim());
   // Google Meet puts button labels ("Mute", "Pin X to your main screen", "Reframe", ...) inside the same tiles as names.
-  const UI_TEXT = /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|your main screen|someone else|can't|cannot|you can|options|menu|settings|meeting|joined|left|waiting|admit|deny)\b/i;
+  const UI_TEXT = /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|your main screen|someone else|can't|cannot|you can|options|menu|settings|meeting|joined|left|waiting|admit|deny|everyone|annotations?|can see|see your|your (screen|video|audio)|recording|breakout|polls?|whiteboard|host controls?)\b/i;
   const okName = (n) => n && n.length >= 2 && n.length <= 40 && n.split(/\s+/).length <= 5 &&
     !isYou(n) && !/[@\d]{3,}/.test(n) && !UI_TEXT.test(n);
 

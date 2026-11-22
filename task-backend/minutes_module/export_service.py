@@ -102,6 +102,8 @@ def concise_sections(revision, data):
 def task_cells(task):
     def value(field):
         text = task.get(field) or "Not recorded"
+        if field == "deadline" and task.get("deadline_label"):
+            text = f"{task['deadline_label']} ({text})"   # exact date first, spoken wording in brackets
         return str(text) + (" (inferred)" if task.get(field+"_inferred") else "")
     return [str(task["description"]), value("owner"), value("deadline"), value("priority"), value("status")]
 

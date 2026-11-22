@@ -1,5 +1,5 @@
 export type TaskStatus = 'pending' | 'in progress' | 'completed' | 'blocked';
-export interface Task { task_id: string; description: string; owner?: string | null; explicit_owner?: string | null; deadline?: string | null; explicit_deadline?: string | null; priority?: 'Low' | 'Medium' | 'High'; status?: TaskStatus; missing_owner?: boolean; missing_deadline?: boolean; explicit_prerequisites?: string[]; inferred_prerequisites?: string[] }
+export interface Task { task_id: string; description: string; owner?: string | null; explicit_owner?: string | null; deadline?: string | null; explicit_deadline?: string | null; deadline_date?: string | null; deadline_label?: string | null; deadline_source?: string | null; deadline_note?: string | null; deadline_method?: string | null; priority?: 'Low' | 'Medium' | 'High'; status?: TaskStatus; missing_owner?: boolean; missing_deadline?: boolean; explicit_prerequisites?: string[]; inferred_prerequisites?: string[] }
 export interface Graph {
   is_feasible: boolean;
   circular_dependencies: {from: string; to: string}[];

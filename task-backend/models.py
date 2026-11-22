@@ -1,6 +1,6 @@
 # models.py
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, List, Optional, Literal
 class ExplicitTask(BaseModel):
     task_id: str = Field(description="Unique identifier for the task, e.g., T1")
@@ -23,12 +23,26 @@ class FactualExtraction(BaseModel):
     date: str
     tasks: List[ExplicitTask]
 
+def _require_deadline_date(schema: dict) -> None:
+    # Optional for validation (an answer without it is still accepted and handled by the calendar rules),
+    # but listed as required in the schema the model sees, so it reliably fills it in.
+    required = schema.setdefault("required", [])
+    if "deadline_date" not in required:
+        required.append("deadline_date")
+
+
 class EnrichedTask(BaseModel):
+    model_config = ConfigDict(json_schema_extra=_require_deadline_date)
+
     task_id: str = Field(description="Must exactly match the task_id from Pass 1")
     description: str = Field(description="A concise, action-oriented description of the work, excluding first-person phrasing and task-number introductions based on the transcript")
     owner: Optional[str] = Field(description="The explicitly stated owner, or logically inferred owner. Null if entirely unknown.")
     missing_owner: bool = Field(description="Set to True if the owner was not explicitly stated and cannot be inferred confidently.")
     deadline: Optional[str] = Field(description="Explicitly stated or logically inferred deadline.")
+    deadline_date: Optional[str] = Field(
+        default=None,
+        description="The exact calendar date (YYYY-MM-DD) the deadline refers to, worked out from meeting_date and the supplied calendar. Null when no date can be determined."
+    )
     missing_deadline: bool = Field(description="Set to True if no deadline was stated or implied.")
     priority: Literal["Low", "Medium", "High"] = Field(description="Infer priority based on urgency words, deadlines, and project context.")
     explicit_prerequisites: List[str] = Field(

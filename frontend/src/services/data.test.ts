@@ -189,3 +189,30 @@ describe('transcript text handling', () => {
     expect(c.speaker).toBe('Dr. Smith');
   });
 });
+
+describe('exact deadlines and scraped names', () => {
+  it('shows the computed date and keeps the spoken wording', () => {
+    const meeting = {
+      _id: 'm1',
+      enriched_tasks: [
+        { task_id: 'T1', description: 'x', deadline: 'within five days', deadline_date: '2026-11-27' },
+        { task_id: 'T2', description: 'y', deadline: 'after approval' },
+      ],
+    } as unknown as MeetingDoc;
+    const [first, second] = tasksOf(meeting);
+    expect(first.deadline).toBe('2026-11-27');
+    expect(first.deadline_source).toBe('within five days');
+    expect(absoluteDeadline(first.deadline)).not.toBeNull();
+    expect(second.deadline).toBe('after approval');
+    expect(second.deadline_source).toBeUndefined();
+  });
+  it('drops Meet interface sentences from participants', () => {
+    expect(
+      cleanParticipants([
+        'Everyone can see your annotations',
+        'Shivsharan Sanjawad',
+        'Madhukar Pai',
+      ])
+    ).toEqual(['Shivsharan Sanjawad', 'Madhukar Pai']);
+  });
+});
