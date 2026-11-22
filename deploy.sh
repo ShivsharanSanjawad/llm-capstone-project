@@ -104,5 +104,6 @@ case "$TARGET" in
 esac
 
 log "Done. Live:"
-[[ "$TARGET" != "frontend" ]] && echo "  backend : $BACKEND_URL"
-[[ "$TARGET" != "backend"  ]] && echo "  frontend: https://vizura-frontend.vercel.app"
+# `if`, not `a && b`: when the test is false, `&&` leaves exit status 1 and the finished script would report failure.
+if [[ "$TARGET" != "frontend" ]]; then echo "  backend : $BACKEND_URL"; fi
+if [[ "$TARGET" != "backend"  ]]; then echo "  frontend: https://vizura-frontend.vercel.app"; fi
