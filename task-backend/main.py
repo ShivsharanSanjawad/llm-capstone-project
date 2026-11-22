@@ -39,6 +39,7 @@ import tracking
 import pipeline_metrics as pm
 from priority import apply_priority
 from dependency_edits import apply_edits
+import dependency_audit
 
 settings = Settings.load()
 llm_service = LLMService(settings)
@@ -464,6 +465,27 @@ async def run_factual_extraction(transcript_text: str, meeting_date: Optional[st
     )
 
 
+async def run_dependency_audit(transcript_text: str, tasks: List[Dict[str, Any]]):
+    from models import DependencyAudit
+    return await structured_task_call(
+        "task-dependency-audit", dependency_audit.AUDIT_SYSTEM,
+        "List every dependency stated in this meeting between the listed tasks, as JSON edges with verbatim evidence.",
+        {"tasks": dependency_audit.task_catalog(tasks), "transcript": transcript_text}, DependencyAudit,
+    )
+
+
+async def audit_dependencies(transcript_text: str, tasks: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Second look at dependencies. It only adds edges, and a failure here never fails the analysis."""
+    if len(tasks) < 2:
+        return {"proposed": 0, "added": 0, "already_known": 0, "ungrounded": 0, "invalid": 0}
+    try:
+        audit = await run_dependency_audit(transcript_text, tasks)
+    except Exception:
+        logging.getLogger("uvicorn.error").warning("Dependency audit failed; continuing without it", exc_info=True)
+        return {"proposed": 0, "added": 0, "already_known": 0, "ungrounded": 0, "invalid": 0, "failed": 1}
+    return dependency_audit.merge_audit(tasks, audit.edges, transcript_text)
+
+
 async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dict[str, Any]],
                                    meeting_date: Optional[str] = None) -> ContextualInference:
     payload = {"transcript": transcript_text, "factual_tasks": factual_tasks}
@@ -574,6 +596,9 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
         with trace.step("resolve_deadlines_pass2") as st:
             enriched_tasks_dict = apply_deadlines([task.model_dump() for task in enriched_data.enriched_tasks], day)
             st.update(pm.deadline_stats(enriched_tasks_dict))
+
+        with trace.step("dependency_audit") as st:
+            st.update(await audit_dependencies(raw_transcript, enriched_tasks_dict))
 
         with trace.step("priority_scoring") as st:
             apply_priority(enriched_tasks_dict, day)
@@ -697,6 +722,8 @@ async def infer_context_pass(meeting_id: str):
             enriched_tasks_dict = apply_deadlines([task.model_dump() for task in enriched_data.enriched_tasks], day)
             st.update(pm.deadline_stats(enriched_tasks_dict))
 
+        with trace.step("dependency_audit") as st:
+            st.update(await audit_dependencies(raw_transcript, enriched_tasks_dict))
         with trace.step("apply_manual_dependency_edits") as st:
             edits = meeting_doc.get("dependency_edits") or {}
             apply_edits(enriched_tasks_dict, edits)   # a person's corrections survive re-analysis

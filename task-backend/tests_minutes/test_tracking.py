@@ -190,7 +190,7 @@ def test_process_pipeline_is_traced_end_to_end_without_leaking_content(mlflow, m
     metrics = {m["key"]: m["value"] for m in batch["metrics"]}
     tags = {t["key"]: t["value"] for t in batch["tags"]}
     assert tags["steps"] == ("pass1_factual_extraction > resolve_deadlines_pass1 > save_factual_tasks > pass2_contextual_inference > "
-                             "resolve_deadlines_pass2 > priority_scoring > pass3_graph_analysis > save_final_result")
+                             "resolve_deadlines_pass2 > dependency_audit > priority_scoring > pass3_graph_analysis > save_final_result")
     assert tags["meeting_id"] == "m1" and tags["status"] == "succeeded"
     assert metrics["step.pass1_factual_extraction.tasks_extracted"] == 1
     assert metrics["step.resolve_deadlines_pass2.resolved_to_date"] == 1

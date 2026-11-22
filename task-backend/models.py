@@ -104,3 +104,13 @@ class ContextualInference(BaseModel):
         default_factory=list,
         description="Agreements or execution steps that resolved the original circular dependencies. Each item should explain the resolution and affected task IDs."
     )
+
+class AuditedEdge(BaseModel):
+    prerequisite_task_id: str = Field(description="The task that must be finished first (a task_id from the list).")
+    task_id: str = Field(description="The task that has to wait for it (a task_id from the list).")
+    evidence: str = Field(description="The exact words from the transcript, copied verbatim, in which someone says one thing is needed, awaited or must come before the other.")
+
+
+
+class DependencyAudit(BaseModel):
+    edges: List[AuditedEdge] = Field(default_factory=list, description="Every dependency stated in the transcript, one entry per stated need. Mutual needs produce two entries, one in each direction.")
