@@ -10,7 +10,8 @@ from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError
+from types import SimpleNamespace
+import httpx
 from pydantic import ValidationError
 from .prompt_templates import SYSTEM, PROMPT_VERSION
 from .schemas import Minutes
@@ -25,7 +26,7 @@ class LLMError(Exception):
 PROVIDERS = {
     "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-2.5-flash"),
     "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b"),
-    "openai": ("OPENAI_API_KEY", None, "gpt-4o-mini"),
+    "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini"),
 }
 
 class RequestScheduler:
@@ -77,13 +78,20 @@ class LLMService:
         key, base, default = PROVIDERS.get(self.provider, ("", None, ""))
         self.model = settings.model or os.getenv("LLM_MODEL") or default
         self.configured = bool(os.getenv(key))
+        self.base_url = (base or "").rstrip("/")
+        self._sdk_compat = client is not None
         self.client = client
         if client is None and self.configured:
-            self.client = AsyncOpenAI(api_key=os.environ[key], base_url=base, max_retries=0, timeout=settings.timeout_seconds)
+            self.client = httpx.AsyncClient(
+                timeout=settings.timeout_seconds,
+                headers={"Authorization": f"Bearer {os.environ[key]}"},
+            )
 
     async def close(self):
         if self.client:
-            await self.client.close()
+            close = getattr(self.client, "aclose", None) or getattr(self.client, "close", None)
+            if close:
+                await close()
 
     def loop_state(self):
         loop = asyncio.get_running_loop()
@@ -125,6 +133,43 @@ class LLMService:
             if jobs.get(key) is task:
                 jobs.pop(key, None)
 
+    @staticmethod
+    def _completion_from_json(data):
+        usage_data = data.get("usage")
+        usage = SimpleNamespace(
+            prompt_tokens=usage_data.get("prompt_tokens"),
+            completion_tokens=usage_data.get("completion_tokens"),
+        ) if isinstance(usage_data, dict) else None
+        choices = data.get("choices") or []
+        if not choices:
+            raise ValueError("Provider returned no completion choices.")
+        choice = choices[0]
+        message = choice.get("message") or {}
+        return SimpleNamespace(
+            usage=usage,
+            choices=[SimpleNamespace(
+                finish_reason=choice.get("finish_reason"),
+                message=SimpleNamespace(
+                    content=message.get("content"),
+                    refusal=message.get("refusal"),
+                ),
+            )],
+        )
+
+    @staticmethod
+    def _error_details(error):
+        response = getattr(error, "response", None)
+        status_code = getattr(error, "status_code", None)
+        if status_code is None and response is not None:
+            status_code = response.status_code
+        body = getattr(error, "body", None)
+        if not isinstance(body, dict) and response is not None:
+            try:
+                body = response.json()
+            except (ValueError, json.JSONDecodeError):
+                body = {}
+        return status_code, body if isinstance(body, dict) else {}, response.headers if response is not None else {}
+
     async def _generate(self, instruction, payload, record, schema=Minutes, system=SYSTEM):
         if not self.client:
             raise LLMError("provider_not_configured", 503)
@@ -158,7 +203,17 @@ class LLMService:
                 async with scheduler.reserve(input_estimate+output_limit, record) as ticket:
                     record["calls"] += 1
                     record["estimated_input_tokens"] += input_estimate
-                    response = await self.client.chat.completions.create(**kwargs)
+                    if self._sdk_compat:
+                        response = await self.client.chat.completions.create(**kwargs)
+                    else:
+                        request_body = dict(kwargs)
+                        request_body.update(request_body.pop("extra_body", {}))
+                        http_response = await self.client.post(
+                            f"{self.base_url}/chat/completions",
+                            json=request_body,
+                        )
+                        http_response.raise_for_status()
+                        response = self._completion_from_json(http_response.json())
                     usage = response.usage
                     if usage and usage.prompt_tokens is not None and usage.completion_tokens is not None:
                         ticket[1] = usage.prompt_tokens+usage.completion_tokens
@@ -190,15 +245,25 @@ class LLMService:
                     # Report error categories only, never generated text or transcript values.
                     kinds = sorted({error["type"] for error in exc.errors(include_input=False, include_context=False)})
                     raise LLMError("invalid_structured_output", diagnostics={"validation_error_types": kinds}) from None
-            except APIStatusError as exc:
-                record["usage_complete"] = False
-                body = exc.body if isinstance(exc.body, dict) else {}
+            except LLMError:
+                raise
+            except Exception as exc:
+                status_code, body, response_headers = self._error_details(exc)
+                if status_code is None:
+                    if isinstance(exc, httpx.RequestError) or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}:
+                        record["usage_complete"] = False
+                        category = "provider_connection_timeout"
+                        delay = 2 ** retry + random.uniform(0, self.settings.retry_jitter * 2 ** retry)
+                    else:
+                        raise
+                else:
+                    record["usage_complete"] = False
                 detail = body.get("error", body)
                 param = detail.get("param", "") if isinstance(detail, dict) else ""
                 message = str(detail.get("message", "")) if isinstance(detail, dict) else ""
                 provider_code = str(detail.get("code", "")) if isinstance(detail, dict) else ""
                 json_generation_failed = provider_code == "json_validate_failed" or "failed to generate json" in message.lower()
-                if self.provider == "groq" and exc.status_code == 400 and mode and json_generation_failed and not json_generation_retry:
+                if status_code == 400 and self.provider == "groq" and mode and json_generation_failed and not json_generation_retry:
                     # This is a failed model output, not an unsupported model.
                     # Retry once with prompted JSON; the exact same Pydantic
                     # schema and deterministic evidence checks still apply.
@@ -208,35 +273,35 @@ class LLMService:
                     logging.getLogger("minutes").warning(json.dumps({"event":"json_generation_fallback", "request_id":record.get("request_id"), "provider":self.provider, "model":self.model}))
                     continue
                 format_unsupported = param == "response_format" or ("response_format" in message.lower() and any(word in message.lower() for word in ("unsupported", "not supported", "not available", "unknown parameter")))
-                if exc.status_code in (400, 422) and mode and format_unsupported:
+                if status_code in (400, 422) and mode and format_unsupported:
                     mode = False
                     self._json_mode_supported = False
                     continue
-                category = classify_provider_error(exc.status_code, detail)
-                logging.getLogger("minutes").warning(json.dumps({"event":"provider_error", "request_id":record.get("request_id"), "provider":self.provider, "model":self.model, "upstream_status":exc.status_code, "category":category}))
+                if status_code is None:
+                    pass
+                else:
+                    category = classify_provider_error(status_code, detail)
+                    logging.getLogger("minutes").warning(json.dumps({"event":"provider_error", "request_id":record.get("request_id"), "provider":self.provider, "model":self.model, "upstream_status":status_code, "category":category}))
                 if category in {"provider_quota_exhausted", "provider_context_limit", "provider_authentication", "provider_model_unavailable"}:
                     raise LLMError(category, 429 if category=="provider_quota_exhausted" else 422 if category=="provider_context_limit" else 502,
-                        diagnostics={"upstream_status":exc.status_code}) from None
-                transient = exc.status_code in (408, 409, 429) or exc.status_code >= 500
-                if not transient:
-                    raise LLMError("provider_authentication" if exc.status_code in (401,403) else "provider_invalid_request",
-                        diagnostics={"upstream_status": exc.status_code,
-                            "parameter": param if param in {"model", "response_format", "temperature", "max_tokens", "max_completion_tokens", "reasoning_effort", "reasoning_format"} else None,
-                            "provider_code": provider_code if provider_code in {"json_validate_failed", "invalid_request_error", "invalid_parameter", "unsupported_parameter"} else None}) from None
-                delay = 2 ** retry + random.uniform(0, self.settings.retry_jitter * 2 ** retry)
-                header = exc.response.headers.get("retry-after")
-                if header:
-                    try:
-                        delay = max(delay, float(header))
-                    except ValueError:
+                        diagnostics={"upstream_status":status_code}) from None
+                if status_code is not None:
+                    transient = status_code in (408, 409, 429) or status_code >= 500
+                    if not transient:
+                        raise LLMError("provider_authentication" if status_code in (401,403) else "provider_invalid_request",
+                            diagnostics={"upstream_status": status_code,
+                                "parameter": param if param in {"model", "response_format", "temperature", "max_tokens", "max_completion_tokens", "reasoning_effort", "reasoning_format"} else None,
+                                "provider_code": provider_code if provider_code in {"json_validate_failed", "invalid_request_error", "invalid_parameter", "unsupported_parameter"} else None}) from None
+                    delay = 2 ** retry + random.uniform(0, self.settings.retry_jitter * 2 ** retry)
+                    header = response_headers.get("retry-after")
+                    if header:
                         try:
-                            delay = max(delay, (parsedate_to_datetime(header)-datetime.now(timezone.utc)).total_seconds())
-                        except (ValueError, TypeError):
-                            pass
-            except (APIConnectionError, APITimeoutError):
-                record["usage_complete"] = False
-                category = "provider_connection_timeout"
-                delay = 2 ** retry + random.uniform(0, self.settings.retry_jitter * 2 ** retry)
+                            delay = max(delay, float(header))
+                        except ValueError:
+                            try:
+                                delay = max(delay, (parsedate_to_datetime(header)-datetime.now(timezone.utc)).total_seconds())
+                            except (ValueError, TypeError):
+                                pass
             if retry >= self.settings.max_retries:
                 raise LLMError("provider_transient_failure", 504, diagnostics={"category":category})
             retry += 1

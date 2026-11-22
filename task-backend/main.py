@@ -1,3 +1,5 @@
+import logging
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import httpx
 from bson import ObjectId
+from database import database
 
 from models import FactualExtraction, ContextualInference
 from graph_engine import analyze_task_graph
@@ -56,6 +59,21 @@ elif OPENAI_API_KEY:
     llm_provider_name = f"OpenAI ({llm_model_name})"
 else:
     print("[WARNING] No LLM API key found (GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY).")
+
+# The combined app imports this module while it is being initialized, so its
+# shared runtime configuration must be available before combined_app is imported.
+from minutes_module.config import Settings
+from minutes_module.llm_service import LLMService
+
+settings = Settings.load()
+if GEMINI_API_KEY:
+    settings.provider = "gemini"
+elif GROQ_API_KEY:
+    settings.provider = "groq"
+elif OPENAI_API_KEY:
+    settings.provider = "openai"
+settings.model = llm_model_name
+llm_service = LLMService(settings)
 
 # ---------------------------------------------------------------------------
 # Database Configuration (MongoDB Atlas with automatic local fallback)
@@ -142,11 +160,11 @@ async def get_meeting_doc(meeting_id: str) -> Optional[Dict[str, Any]]:
     store = read_local_storage()
     return store.get(str(meeting_id))
 
-async def list_meetings_docs(limit: int = 50) -> List[Dict[str, Any]]:
+async def list_meetings_docs(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     global db_mode, tasks_collection
     if db_mode == "mongodb" and tasks_collection is not None:
         try:
-            cursor = tasks_collection.find().sort("_id", -1).limit(limit)
+            cursor = tasks_collection.find().sort("_id", -1).skip(offset).limit(limit)
             meetings = []
             async for doc in cursor:
                 doc["_id"] = str(doc["_id"])
@@ -156,7 +174,7 @@ async def list_meetings_docs(limit: int = 50) -> List[Dict[str, Any]]:
             print(f"[Database] MongoDB list error: {e}. Checking local storage.")
     
     store = read_local_storage()
-    return list(store.values())[:limit]
+    return list(store.values())[offset:offset + limit]
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -179,9 +197,15 @@ async def lifespan(app: FastAPI):
             await mongo_client.admin.command('ping')
             mongo_db = mongo_client.meeting_db
             tasks_collection = mongo_db.factual_tasks
+            database.client = mongo_client
+            database.db = mongo_db
             db_mode = "mongodb"
             print("[Database] Successfully connected to MongoDB Atlas!")
         except Exception as e:
+            if mongo_client:
+                mongo_client.close()
+            database.client = None
+            database.db = None
             db_mode = "local"
             init_local_storage()
             print(f"[Database] MongoDB Atlas connection failed ({e}). Using local JSON storage ({LOCAL_STORAGE_FILE}).")
@@ -194,7 +218,7 @@ async def lifespan(app: FastAPI):
     yield
 
     if mongo_client:
-        mongo_client.close()
+        database.close()
         print("[Database] MongoDB connection closed.")
 
 # ---------------------------------------------------------------------------
@@ -520,6 +544,9 @@ async def extract_factual_pass(payload: TranscriptInput):
     except HTTPException:
         raise
     except Exception as e:
+        logging.getLogger("uvicorn.error").exception(
+            "Factual extraction failed (%s)", type(e).__name__
+        )
         raise HTTPException(status_code=502, detail={"code":"task_provider_error"}) from None
 
 # Modular Pass 2 Endpoint
@@ -558,6 +585,9 @@ async def infer_context_pass(meeting_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        logging.getLogger("uvicorn.error").exception(
+            "Contextual inference failed (%s)", type(e).__name__
+        )
         raise HTTPException(status_code=502, detail={"code":"task_provider_error"}) from None
 
 # Meetings list and retrieval

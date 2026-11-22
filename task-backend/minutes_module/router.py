@@ -82,8 +82,10 @@ class Runtime:
         record["fingerprint"] = fingerprint
         try:
             segments = source_segments if source_segments is not None else normalize(request, self.settings.max_input_chars)
-            async with asyncio.timeout(self.settings.total_timeout_seconds):
-                minutes, verification = await Summarizer(self.settings, self.llm).generate(request.meeting, segments, record)
+            minutes, verification = await asyncio.wait_for(
+                Summarizer(self.settings, self.llm).generate(request.meeting, segments, record),
+                timeout=self.settings.total_timeout_seconds,
+            )
             record["verification"] = {"flag_count":len(verification["flags"])}
             record["estimated_cost_usd"] = None
             if self.settings.pricing_file and record["usage_complete"]:
@@ -106,13 +108,16 @@ class Runtime:
         except LLMError as exc:
             await self.monitor.finish(record, "failed", exc.code)
             raise HTTPException(exc.status, detail={"code":exc.code, "request_id":record["request_id"], "provider":self.llm.provider, "model":self.llm.model, **exc.diagnostics}) from None
-        except TimeoutError:
+        except asyncio.TimeoutError:
             await self.monitor.finish(record, "failed", "generation_timeout")
             raise HTTPException(504, detail={"code":"generation_timeout"}) from None
         except HTTPException:
             await self.monitor.finish(record, "failed", "storage_or_revision_error")
             raise
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("uvicorn.error").exception(
+                "Minutes generation failed before completion (%s)", type(exc).__name__
+            )
             await self.monitor.finish(record, "failed", "internal_error")
             raise HTTPException(500, detail={"code":"minutes_internal_error"}) from None
 

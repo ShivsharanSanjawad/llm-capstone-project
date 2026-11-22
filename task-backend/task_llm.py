@@ -20,8 +20,10 @@ async def call(llm, instruction, payload, schema, system, record):
 
 async def factual_extraction(llm, text):
     record = Monitor().begin("task-extraction", llm.provider, llm.model)
-    async with asyncio.timeout(llm.settings.total_timeout_seconds):
-        return await call(llm, "Extract factual tasks as JSON.", {"transcript":text}, FactualExtraction, FACTUAL_SYSTEM, record)
+    return await asyncio.wait_for(
+        call(llm, "Extract factual tasks as JSON.", {"transcript":text}, FactualExtraction, FACTUAL_SYSTEM, record),
+        timeout=llm.settings.total_timeout_seconds,
+    )
 
 async def enrich_tasks(llm, text, tasks, system):
     if not tasks:
@@ -46,7 +48,7 @@ async def enrich_tasks(llm, text, tasks, system):
         by_id = {t.task_id:t for t in result.enriched_tasks}
         return [by_id[t["task_id"]] for t in targets]
 
-    async with asyncio.timeout(llm.settings.total_timeout_seconds):
+    async def enrich_all():
         enriched = []
         # Bound response size without changing task IDs or the inference rules.
         # Size the target batch from the configured output budget, not a fixed
@@ -55,3 +57,8 @@ async def enrich_tasks(llm, text, tasks, system):
         for start in range(0, len(tasks), batch_size):
             enriched.extend(await batch(tasks[start:start+batch_size]))
         return ContextualInference(enriched_tasks=enriched)
+
+    return await asyncio.wait_for(
+        enrich_all(),
+        timeout=llm.settings.total_timeout_seconds,
+    )

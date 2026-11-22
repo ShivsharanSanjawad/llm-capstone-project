@@ -199,12 +199,14 @@ def create_workspace_router(runtime):
         selected=retrieve(request.question,sources)
         record=runtime.monitor.begin(meeting_id,runtime.llm.provider,runtime.llm.model)
         try:
-            async with asyncio.timeout(runtime.settings.total_timeout_seconds):
-                answer=await runtime.llm.generate("Answer the question using retrieved excerpts.",
-                    {"question":request.question,"segments":[s.model_dump() for s in selected]},record,schema=Answer,system=QUERY_SYSTEM)
+            answer=await asyncio.wait_for(
+                runtime.llm.generate("Answer the question using retrieved excerpts.",
+                    {"question":request.question,"segments":[s.model_dump() for s in selected]},record,schema=Answer,system=QUERY_SYSTEM),
+                timeout=runtime.settings.total_timeout_seconds,
+            )
         except LLMError as exc:
             raise HTTPException(exc.status,detail={"code":exc.code}) from None
-        except TimeoutError:
+        except asyncio.TimeoutError:
             raise HTTPException(504,detail={"code":"query_timeout"}) from None
         # Only return claims with valid source references. Semantic entailment still needs human judgment.
         safe=[]
