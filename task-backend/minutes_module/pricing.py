@@ -20,6 +20,7 @@ PRICES = {
     "gemini/gemini-2.5-flash":      {"input_per_million": 0.30, "output_per_million": 2.50, "checked": "2026-11-22"},
     "gemini/gemini-2.5-pro":        {"input_per_million": 1.25, "output_per_million": 10.00, "checked": "2026-11-22"},
     "gemini/gemini-2.5-flash-lite": {"input_per_million": 0.10, "output_per_million": 0.40},
+    "gemini/gemini-3.5-flash-lite": {"input_per_million": 0.30, "output_per_million": 2.50, "checked": "2026-11-22"},
     # OpenAI
     "openai/gpt-4o-mini":  {"input_per_million": 0.15, "output_per_million": 0.60},
     "openai/gpt-4.1-mini": {"input_per_million": 0.40, "output_per_million": 1.60},

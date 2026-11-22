@@ -80,3 +80,20 @@ def test_inference_payload_carries_the_calendar_and_the_prompt_asks_for_dates(mo
     assert captured["payload"]["meeting_weekday"] == "Sunday"
     assert captured["payload"]["calendar"].startswith("Sun 2026-11-22; Mon 2026-11-23")
     assert "deadline_date" in captured["system"] and "YYYY-MM-DD" in captured["system"]
+
+
+def test_the_model_is_sent_a_slim_task_list_and_a_short_calendar(monkeypatch):
+    captured = {}
+
+    async def fake(kind, system, instruction, payload, model):
+        captured.update(payload=payload)
+        return ContextualInference(enriched_tasks=[])
+
+    monkeypatch.setattr(main, "structured_task_call", fake)
+    tasks = [{"task_id": "T1", "description": "Build UI", "explicit_owner": None, "explicit_deadline": "within 7 days",
+              "explicit_prerequisites": [], "deadline_date": "2026-12-02", "deadline_label": "Wed", "deadline_source": "x",
+              "deadline_method": "calendar rule"}]
+    run(main.run_contextual_inference("text", tasks, "2026-11-22"))
+    assert captured["payload"]["factual_tasks"] == [{"task_id": "T1", "description": "Build UI", "explicit_deadline": "within 7 days"}]
+    assert captured["payload"]["calendar"].count(";") == 20          # 21 days
+    assert tasks[0]["deadline_date"] == "2026-12-02"                  # the caller's data is untouched

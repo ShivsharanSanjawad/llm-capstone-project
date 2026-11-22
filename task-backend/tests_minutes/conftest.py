@@ -44,11 +44,3 @@ def fake_database(monkeypatch):
     monkeypatch.setattr(database, "connect", AsyncMock())
     monkeypatch.setattr(database, "close", lambda: None)
     yield db
-
-
-@pytest.fixture(autouse=True)
-def no_real_dependency_audit(monkeypatch):
-    """The dependency audit is a real LLM call; tests must never make one. Tests of the audit patch this themselves."""
-    import main
-    from models import DependencyAudit
-    monkeypatch.setattr(main, "run_dependency_audit", AsyncMock(return_value=DependencyAudit(edges=[])))

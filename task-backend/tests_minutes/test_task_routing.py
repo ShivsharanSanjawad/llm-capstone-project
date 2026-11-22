@@ -128,3 +128,23 @@ def test_sloppy_model_values_are_coerced_instead_of_failing_the_analysis():
     assert task.explicit_prerequisites == ["T2", "3"]
     assert task.dependency_evidence[0] == {"prerequisite_task_id": "T2", "task_id": "T1", "evidence": "", "note": "a; b", "n": "5"}
     assert parsed.initial_circular_dependencies[0]["to_task_id"] == "2"
+
+
+def test_schema_titles_are_dropped_but_a_field_called_title_survives():
+    from minutes_module.llm_service import _compact_schema
+    from minutes_module.schemas import Minutes
+    compact = _compact_schema(Minutes.model_json_schema())
+    assert "title" in compact["properties"]                      # the Minutes.title field itself
+    assert "title" not in compact                                 # the schema's own display title
+    assert all("title" not in v for v in compact["properties"].values() if isinstance(v, dict) and isinstance(v.get("title"), str))
+
+
+def test_provider_can_be_chosen_explicitly_otherwise_gemini_then_groq_then_openai():
+    from main import pick_provider
+    keys = {"gemini": "g", "groq": "q", "openai": None}
+    assert pick_provider("", keys) == "gemini"
+    assert pick_provider("groq", keys) == "groq"
+    assert pick_provider("GROQ ", keys) == "groq"
+    assert pick_provider("openai", keys) == "gemini"           # no key for it: fall back to the default order
+    assert pick_provider("", {"gemini": None, "groq": "q", "openai": "o"}) == "groq"
+    assert pick_provider("", {"gemini": None, "groq": None, "openai": None}) == ""

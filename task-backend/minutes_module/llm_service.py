@@ -24,7 +24,7 @@ class LLMError(Exception):
         super().__init__(code)
 
 PROVIDERS = {
-    "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-2.5-flash"),
+    "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.5-flash-lite"),
     "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b"),
     "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini"),
 }
@@ -64,6 +64,16 @@ class RequestScheduler:
 
 def generation_key(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _compact_schema(node):
+    """Drop the auto-generated display titles ("Task Id", ...) from a JSON schema: they cost tokens on every call and say nothing the
+    field names do not. A property that is itself called "title" has a dict value and is kept."""
+    if isinstance(node, dict):
+        return {k: _compact_schema(v) for k, v in node.items() if not (k == "title" and isinstance(v, str))}
+    if isinstance(node, list):
+        return [_compact_schema(v) for v in node]
+    return node
 
 
 class LLMService:
@@ -173,7 +183,7 @@ class LLMService:
     async def _generate(self, instruction, payload, record, schema=Minutes, system=SYSTEM):
         if not self.client:
             raise LLMError("provider_not_configured", 503)
-        messages = [{"role":"system", "content":system+"\nJSON schema: "+json.dumps(schema.model_json_schema())},
+        messages = [{"role":"system", "content":system+"\nJSON schema: "+json.dumps(_compact_schema(schema.model_json_schema()))},
                     {"role":"user", "content":instruction+"\n"+json.dumps(payload, ensure_ascii=False)}]
         if estimate(json.dumps(messages, ensure_ascii=False)) + self.settings.max_output_tokens > self.settings.context_tokens:
             raise LLMError("request_exceeds_context_budget", 422)
@@ -196,6 +206,10 @@ class LLMService:
                 # the documented low/hidden settings only for these models.
                 kwargs["reasoning_effort"] = record.get("reasoning_effort", "low")
                 kwargs["extra_body"] = {"reasoning_format": "hidden"}
+            if self.provider == "gemini":
+                # Gemini 3 "thinks" before answering, which made every call 20-80 seconds. Low effort keeps the quality for
+                # extraction and classification at a fraction of the time and output tokens.
+                kwargs["reasoning_effort"] = record.get("reasoning_effort", "low")
             if mode:
                 kwargs["response_format"] = {"type":"json_object"}
             try:
