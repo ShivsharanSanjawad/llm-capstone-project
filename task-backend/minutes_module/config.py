@@ -13,7 +13,7 @@ class Settings(BaseModel):
     chunk_tokens: int = Field(default=2000, ge=500)
     requests_per_minute: int = Field(default=20, ge=1)
     tokens_per_minute: int = Field(default=36000, ge=1000)
-    max_concurrency: int = Field(default=1, ge=1, le=8)
+    max_concurrency: int = Field(default=2, ge=1, le=8)
     cache_ttl_seconds: float = Field(default=900, ge=0)
     cache_entries: int = Field(default=128, ge=0)
     retry_jitter: float = Field(default=.25, ge=0, le=1)

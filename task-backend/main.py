@@ -474,16 +474,28 @@ async def run_dependency_audit(transcript_text: str, tasks: List[Dict[str, Any]]
     )
 
 
-async def audit_dependencies(transcript_text: str, tasks: List[Dict[str, Any]]) -> Dict[str, int]:
-    """Second look at dependencies. It only adds edges, and a failure here never fails the analysis."""
+async def fetch_dependency_audit(transcript_text: str, tasks: List[Dict[str, Any]]):
+    """Ask the model for stated dependencies. Returns the edges, or None if there is nothing to relate or the call failed.
+    Started alongside the main analysis (same task ids), so it adds little waiting time."""
     if len(tasks) < 2:
-        return {"proposed": 0, "added": 0, "already_known": 0, "ungrounded": 0, "invalid": 0}
+        return []
     try:
-        audit = await run_dependency_audit(transcript_text, tasks)
+        return (await run_dependency_audit(transcript_text, tasks)).edges
     except Exception:
         logging.getLogger("uvicorn.error").warning("Dependency audit failed; continuing without it", exc_info=True)
+        return None
+
+
+def merge_dependency_audit(edges, transcript_text: str, tasks: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Add the audited edges the main analysis missed. A missing result never fails the analysis."""
+    if edges is None:
         return {"proposed": 0, "added": 0, "already_known": 0, "ungrounded": 0, "invalid": 0, "failed": 1}
-    return dependency_audit.merge_audit(tasks, audit.edges, transcript_text)
+    return dependency_audit.merge_audit(tasks, edges, transcript_text)
+
+
+async def audit_dependencies(transcript_text: str, tasks: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Fetch and merge in one go (used when the audit is not run alongside another step)."""
+    return merge_dependency_audit(await fetch_dependency_audit(transcript_text, tasks), transcript_text, tasks)
 
 
 async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dict[str, Any]],
@@ -542,6 +554,7 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
         )
 
     meeting_id = None
+    audit_job = None
     trace = tracking.begin("process_meeting", source="api", model=llm_service.model, provider=llm_service.provider,
                            context_tokens=settings.context_tokens, tokens_per_minute=settings.tokens_per_minute,
                            transcript_sha=tracking.fingerprint(raw_transcript))
@@ -582,7 +595,8 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
             meeting_id = await save_meeting_doc(meeting_doc)
         trace.tag("meeting_id", meeting_id)
 
-        # Pass 2: Contextual Inference
+        # Pass 2: Contextual Inference (the dependency audit runs at the same time on the same task ids)
+        audit_job = asyncio.create_task(fetch_dependency_audit(raw_transcript, factual_tasks_dict))
         with trace.step("pass2_contextual_inference") as st:
             try:
                 enriched_data = await run_contextual_inference(raw_transcript, factual_tasks_dict, day.isoformat())
@@ -598,7 +612,7 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
             st.update(pm.deadline_stats(enriched_tasks_dict))
 
         with trace.step("dependency_audit") as st:
-            st.update(await audit_dependencies(raw_transcript, enriched_tasks_dict))
+            st.update(merge_dependency_audit(await audit_job, raw_transcript, enriched_tasks_dict))
 
         with trace.step("priority_scoring") as st:
             apply_priority(enriched_tasks_dict, day)
@@ -635,6 +649,8 @@ async def process_meeting_from_extension(payload: MeetingProcessRequest):
 
     except Exception as exc:
         trace_status, trace_error = "failed", type(exc).__name__
+        if audit_job is not None and not audit_job.done():
+            audit_job.cancel()
         if not isinstance(exc, HTTPException):
             logging.getLogger("uvicorn.error").exception("Meeting processing failed (%s)", type(exc).__name__)
         if meeting_id:
@@ -698,6 +714,7 @@ async def extract_factual_pass(payload: TranscriptInput):
 # Modular Pass 2 Endpoint
 @app.post("/api/v1/infer-context/{meeting_id}")
 async def infer_context_pass(meeting_id: str):
+    audit_job = None
     trace = tracking.begin("infer_context", source="extension", model=llm_service.model, provider=llm_service.provider)
     trace.tag("meeting_id", meeting_id)
     trace_status, trace_error = "succeeded", None
@@ -715,6 +732,7 @@ async def infer_context_pass(meeting_id: str):
 
         day = meeting_day(meeting_doc.get("date") or meeting_doc.get("created_at"))
         trace.param("meeting_day", day.isoformat())
+        audit_job = asyncio.create_task(fetch_dependency_audit(raw_transcript, factual_tasks))
         with trace.step("pass2_contextual_inference") as st:
             enriched_data = await run_contextual_inference(raw_transcript, factual_tasks, day.isoformat())
             st["tasks_enriched"] = len(enriched_data.enriched_tasks)
@@ -723,7 +741,7 @@ async def infer_context_pass(meeting_id: str):
             st.update(pm.deadline_stats(enriched_tasks_dict))
 
         with trace.step("dependency_audit") as st:
-            st.update(await audit_dependencies(raw_transcript, enriched_tasks_dict))
+            st.update(merge_dependency_audit(await audit_job, raw_transcript, enriched_tasks_dict))
         with trace.step("apply_manual_dependency_edits") as st:
             edits = meeting_doc.get("dependency_edits") or {}
             apply_edits(enriched_tasks_dict, edits)   # a person's corrections survive re-analysis
@@ -763,6 +781,8 @@ async def infer_context_pass(meeting_id: str):
         raise
     except Exception as e:
         trace_status, trace_error = "failed", type(e).__name__
+        if audit_job is not None and not audit_job.done():
+            audit_job.cancel()
         logging.getLogger("uvicorn.error").exception(
             "Contextual inference failed (%s)", type(e).__name__
         )
