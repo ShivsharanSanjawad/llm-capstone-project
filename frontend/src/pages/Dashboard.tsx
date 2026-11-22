@@ -6,6 +6,7 @@ import {
   taskStatus,
   absoluteDeadline,
   dateLabel,
+  sortMeetings,
 } from '../services/data';
 import {
   PageTitle,
@@ -17,10 +18,14 @@ import {
 } from '../components/ui';
 import { NewMeetingLink } from '../components/ui';
 export default function Dashboard() {
-  const data = useLoad(async () => ({
-    meetings: await api.meetings(),
-    minutes: await api.minutesList(),
-  }));
+  const data = useLoad(
+    async () => ({
+      meetings: await api.meetings(),
+      minutes: await api.minutesList(),
+    }),
+    [],
+    'workspace'
+  );
   if (data.loading) return <Loading />;
   return (
     <>
@@ -98,7 +103,7 @@ export default function Dashboard() {
                   </Link>
                 </div>
                 <MeetingTable
-                  meetings={meetings.slice(0, 5)}
+                  meetings={sortMeetings(meetings, minutes).slice(0, 5)}
                   minutes={minutes}
                 />
               </section>

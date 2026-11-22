@@ -1,0 +1,50 @@
+# Checks on every pull request (and on pushes to other branches). Nothing is deployed here.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build   # includes the TypeScript type-check
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: task-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - name: Tests
+        run: |
+          uv run pytest tests_minutes -q
+      - name: Vercel dependency list (requirements.txt) still imports the app
+        run: |
+          uv run --no-project --isolated --python 3.12 --with-requirements requirements.txt \
+            python -c "import main, docx, openpyxl, reportlab; assert '/api/meetings/transcribe' in main.app.openapi()['paths']"
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n deploy.sh && bash -n gcp.sh

@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Download, RotateCw, Search, Check } from 'lucide-react';
+import { ArrowLeft, Download, RotateCw, Search, Check, Pencil } from 'lucide-react';
 import { api, ApiError, errorMessage } from '../services/api';
-import { dateLabel, tasksOf } from '../services/data';
+import {
+  cleanParticipants,
+  dateTimeLabel,
+  parseTranscriptLines,
+  tasksOf,
+} from '../services/data';
 import type { Claim, Minutes, Revision } from '../types';
 import {
   PageTitle,
@@ -40,12 +45,20 @@ export default function MeetingDetail() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Minutes>();
   const [search, setSearch] = useState('');
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [editingParticipants, setEditingParticipants] = useState(false);
+  const [participantsInput, setParticipantsInput] = useState('');
+  const [savingParticipants, setSavingParticipants] = useState(false);
   useEffect(() => {
     setEditing(false);
     setDraft(undefined);
     setError('');
     setNotice('');
     setAck(false);
+    setEditingTitle(false);
+    setEditingParticipants(false);
   }, [meetingId]);
   useEffect(() => {
     if (!editing) return;
@@ -107,15 +120,10 @@ export default function MeetingDetail() {
           ...e,
           segment_id: 'source-' + (i + 1),
         }))
-      : (doc.raw_transcript || '')
-          .split('\n')
-          .filter(Boolean)
-          .map((text, i) => ({
-            text,
-            segment_id: 'line-' + (i + 1),
-            speaker: null,
-            timestamp: null,
-          })));
+      : parseTranscriptLines(doc.raw_transcript || '').map((line, i) => ({
+          ...line,
+          segment_id: 'line-' + (i + 1),
+        })));
   return (
     <>
       <Link className="back-link" to="/meetings">
@@ -124,8 +132,167 @@ export default function MeetingDetail() {
       </Link>
       <PageTitle
         eyebrow="MEETING RECORD"
-        title={doc.meeting_title || content?.title || 'Untitled meeting'}
-        description={`${dateLabel(doc.date)} ? ${doc.participants?.join(', ') || 'Participants not recorded'}`}
+        title={
+          editingTitle ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const newTitle = titleInput.trim();
+                if (!newTitle) return;
+                setSavingTitle(true);
+                setError('');
+                try {
+                  await api.updateMeetingTitle(meetingId, newTitle);
+                  doc.meeting_title = newTitle;
+                  setNotice('Meeting title updated successfully.');
+                  setEditingTitle(false);
+                } catch (err) {
+                  setError(errorMessage(err));
+                } finally {
+                  setSavingTitle(false);
+                }
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', margin: '4px 0' }}
+            >
+              <input
+                type="text"
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                disabled={savingTitle}
+                autoFocus
+                placeholder="Meeting title"
+                style={{
+                  fontFamily: "'EB Garamond', Georgia, serif",
+                  fontSize: 'clamp(1.4rem, 2.5vw, 2.2rem)',
+                  padding: '4px 10px',
+                  borderRadius: '5px',
+                  border: '1px solid var(--border)',
+                  background: 'var(--surface)',
+                  color: 'var(--ink)',
+                  minWidth: '260px',
+                  maxWidth: '100%',
+                }}
+              />
+              <button type="submit" className="primary" disabled={savingTitle} style={{ padding: '6px 14px' }}>
+                {savingTitle ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={savingTitle}
+                style={{ padding: '6px 14px' }}
+                onClick={() => setEditingTitle(false)}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <span>{doc.meeting_title || content?.title || 'Untitled meeting'}</span>
+              <button
+                type="button"
+                className="icon-button"
+                title="Edit meeting title"
+                aria-label="Edit meeting title"
+                style={{
+                  padding: '4px 8px',
+                  fontSize: '0.8rem',
+                  border: '1px solid var(--border)',
+                  borderRadius: '4px',
+                  background: 'var(--surface)',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                }}
+                onClick={() => {
+                  setTitleInput(doc.meeting_title || content?.title || 'Untitled meeting');
+                  setEditingTitle(true);
+                }}
+              >
+                <Pencil size={13} />
+                <span style={{ fontSize: '0.72rem', fontWeight: 600 }}>Edit title</span>
+              </button>
+            </span>
+          )
+        }
+        description={
+          editingParticipants ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const names = participantsInput
+                  .split(',')
+                  .map((p) => p.trim())
+                  .filter(Boolean);
+                setSavingParticipants(true);
+                setError('');
+                try {
+                  await api.updateMeeting(meetingId, { participants: names });
+                  doc.participants = names;
+                  setNotice('Participants updated successfully.');
+                  setEditingParticipants(false);
+                } catch (err) {
+                  setError(errorMessage(err));
+                } finally {
+                  setSavingParticipants(false);
+                }
+              }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '4px 0' }}
+            >
+              <span>{dateTimeLabel(doc.date, doc.created_at)} ·</span>
+              <input
+                type="text"
+                value={participantsInput}
+                onChange={(e) => setParticipantsInput(e.target.value)}
+                disabled={savingParticipants}
+                placeholder="Alice, Bob, Charlie"
+                autoFocus
+                style={{ padding: '3px 8px', fontSize: '0.82rem', width: '220px' }}
+              />
+              <button type="submit" className="primary" disabled={savingParticipants} style={{ padding: '3px 8px', fontSize: '0.75rem' }}>
+                Save
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={savingParticipants}
+                style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                onClick={() => setEditingParticipants(false)}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span>{dateTimeLabel(doc.date, doc.created_at)} · {cleanParticipants(doc.participants).join(', ') || 'Participants not recorded'}</span>
+              <button
+                type="button"
+                className="icon-button"
+                title="Edit participants"
+                aria-label="Edit participants"
+                style={{
+                  padding: '2px 6px',
+                  fontSize: '0.75rem',
+                  border: '1px solid var(--border)',
+                  borderRadius: '4px',
+                  background: 'var(--surface)',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                }}
+                onClick={() => {
+                  setParticipantsInput(cleanParticipants(doc.participants).join(', ') || '');
+                  setEditingParticipants(true);
+                }}
+              >
+                <Pencil size={11} />
+                <span style={{ fontSize: '0.68rem', fontWeight: 600 }}>Edit participants</span>
+              </button>
+            </span>
+          )
+        }
         action={<Badge>{doc.status || 'unknown'}</Badge>}
       />
       {error && <ErrorNotice message={error} />}
@@ -231,7 +398,7 @@ export default function MeetingDetail() {
                     <h2>{content.title}</h2>
                     <p className="muted">
                       {rev.approved_at
-                        ? `Approved by ${rev.reviewer} ? ${dateLabel(rev.approved_at)}`
+                        ? `Approved by ${rev.reviewer} ? ${dateTimeLabel(rev.approved_at)}`
                         : 'Draft minutes require human review before approval.'}
                     </p>
                   </div>
@@ -553,7 +720,7 @@ function RevisionHistory({
               Revision {r.revision} ? {r.reviewer || 'Generated draft'}
             </span>
             <span>
-              {dateLabel(r.created_at)} <Badge>{r.status}</Badge>
+              {dateTimeLabel(r.created_at)} <Badge>{r.status}</Badge>
             </span>
           </div>
         ))

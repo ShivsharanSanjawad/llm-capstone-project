@@ -194,7 +194,7 @@ class LLMService:
             if self.provider == "groq" and self.model in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
                 # Groq's GPT-OSS reasoning must not leak into JSON output. Use
                 # the documented low/hidden settings only for these models.
-                kwargs["reasoning_effort"] = "low"
+                kwargs["reasoning_effort"] = record.get("reasoning_effort", "low")
                 kwargs["extra_body"] = {"reasoning_format": "hidden"}
             if mode:
                 kwargs["response_format"] = {"type":"json_object"}

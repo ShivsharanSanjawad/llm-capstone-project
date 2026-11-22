@@ -19,7 +19,11 @@ class Summarizer:
         partials = []
         retained = {field: [] for field in ("decisions", "unresolved_issues", "follow_up_items")}
         async def summarize_batch(batch):
-            payload = {"meeting":meeting.model_dump(), "segments":[s.model_dump() for s in batch]}
+            meeting_info = meeting.model_dump()
+            if not any(s.speaker for s in segments):
+                # No speaker labels: the roster must not be used to attribute utterances.
+                meeting_info["attendee_roster_unattributed"] = meeting_info.pop("participants", [])
+            payload = {"meeting":meeting_info, "segments":[s.model_dump() for s in batch]}
             try:
                 result = await self.llm.generate(MAP, payload, record)
             except LLMError as exc:

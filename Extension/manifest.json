@@ -18,6 +18,9 @@
     "https://localhost/*",
     "http://127.0.0.1/*",
     "https://127.0.0.1/*",
+    "https://capstone-api.shivsharan.me/*",
+    "https://capstone-gcp.shivsharan.me/*",
+    "https://*.run.app/*",
     "https://vizura-backend.vercel.app/*",
     "https://meet.google.com/*"
   ],

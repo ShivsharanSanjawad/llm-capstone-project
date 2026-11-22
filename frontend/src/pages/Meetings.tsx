@@ -2,7 +2,15 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, X, Upload, Check, LoaderCircle } from 'lucide-react';
 import { api, ApiError, errorMessage } from '../services/api';
-import { parseTranscriptFile, sortMeetings } from '../services/data';
+import {
+  parseTranscriptFile,
+  sortMeetingsBy,
+  meetingSortOptions,
+  cleanParticipants,
+  cleanTranscriptText,
+  meetingTimestamp,
+  type MeetingSort,
+} from '../services/data';
 import type { ProcessInput, MeetingDoc, Entry } from '../types';
 import {
   PageTitle,
@@ -13,10 +21,14 @@ import {
 } from '../components/ui';
 import { NewMeetingLink } from '../components/ui';
 export default function Meetings() {
-  const data = useLoad(async () => ({
-    meetings: await api.meetings(),
-    minutes: await api.minutesList(),
-  }));
+  const data = useLoad(
+    async () => ({
+      meetings: await api.meetings(),
+      minutes: await api.minutesList(),
+    }),
+    [],
+    'workspace'
+  );
   const [deletingId, setDeletingId] = useState('');
   const [deleteError, setDeleteError] = useState('');
   async function deleteMeeting(meeting: MeetingDoc) {
@@ -39,17 +51,46 @@ export default function Meetings() {
   }
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('');
+  const [minutesFilter, setMinutesFilter] = useState('');
+  const [sort, setSort] = useState<MeetingSort>('newest');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [params, setParams] = useSearchParams();
-  const list = sortMeetings(
-    data.value?.meetings || [],
-    data.value?.minutes
-  ).filter(
-    (m) =>
-      (m.meeting_title + ' ' + m.participants?.join(' '))
+  const allMeetings = data.value?.meetings || [];
+  const minuteRevisions = data.value?.minutes || [];
+  // Date filters are calendar days in India time (the app shows IST everywhere).
+  const fromTime = from ? Date.parse(from + 'T00:00:00+05:30') : null;
+  const toTime = to ? Date.parse(to + 'T23:59:59.999+05:30') : null;
+  const list = sortMeetingsBy(allMeetings, minuteRevisions, sort).filter((m) => {
+    const when = meetingTimestamp(m, minuteRevisions);
+    const minutesStatus =
+      minuteRevisions.find((r) => r.meeting_id === m._id)?.status || 'none';
+    return (
+      (m.meeting_title + ' ' + cleanParticipants(m.participants).join(' '))
         .toLowerCase()
         .includes(search.toLowerCase()) &&
-      (!filter || m.status === filter)
+      (!filter || m.status === filter) &&
+      (!minutesFilter || minutesStatus === minutesFilter) &&
+      (fromTime === null || (when !== null && when >= fromTime)) &&
+      (toTime === null || (when !== null && when <= toTime))
+    );
+  });
+  const filtersActive = !!(
+    search ||
+    filter ||
+    minutesFilter ||
+    from ||
+    to ||
+    sort !== 'newest'
   );
+  function clearFilters() {
+    setSearch('');
+    setFilter('');
+    setMinutesFilter('');
+    setFrom('');
+    setTo('');
+    setSort('newest');
+  }
   return (
     <>
       <PageTitle
@@ -78,8 +119,57 @@ export default function Meetings() {
             <option value="completed">Completed</option>
             <option value="factual_extracted">Factual tasks saved</option>
           </select>
+          <select
+            aria-label="Filter minutes status"
+            value={minutesFilter}
+            onChange={(e) => setMinutesFilter(e.target.value)}
+          >
+            <option value="">All minutes states</option>
+            <option value="none">Minutes not generated</option>
+            <option value="draft">Draft minutes</option>
+            <option value="approved">Approved minutes</option>
+          </select>
+          <select
+            aria-label="Sort meetings"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as MeetingSort)}
+          >
+            {meetingSortOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                Sort: {o.label}
+              </option>
+            ))}
+          </select>
+          <label className="date-filter">
+            <span className="sr-only">From date</span>
+            <input
+              type="date"
+              aria-label="From date"
+              title="From date"
+              value={from}
+              max={to || undefined}
+              onChange={(e) => setFrom(e.target.value)}
+            />
+          </label>
+          <label className="date-filter">
+            <span className="sr-only">To date</span>
+            <input
+              type="date"
+              aria-label="To date"
+              title="To date"
+              value={to}
+              min={from || undefined}
+              onChange={(e) => setTo(e.target.value)}
+            />
+          </label>
+          {filtersActive && <button onClick={clearFilters}>Clear</button>}
           <button onClick={data.reload}>Refresh</button>
         </div>
+        {!data.loading && !data.error && (
+          <p className="small muted" style={{ padding: '10px 22px 0' }}>
+            Showing {list.length} of {allMeetings.length} meetings
+          </p>
+        )}
         {data.loading ? (
           <Loading />
         ) : data.error ? (
@@ -183,7 +273,7 @@ function NewMeeting({ onClose }: { onClose: () => void }) {
       const input: ProcessInput = {
         ...(uploaded || {}),
         ...(text.trim()
-          ? { transcript_text: text, transcript: undefined }
+          ? { transcript_text: cleanTranscriptText(text), transcript: undefined }
           : {}),
         ...(audioEntries.length
           ? {

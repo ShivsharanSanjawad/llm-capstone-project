@@ -9,27 +9,48 @@ import {
   Trash2,
 } from 'lucide-react';
 import { errorMessage } from '../services/api';
-import { dateLabel, tasksOf } from '../services/data';
+import { cleanParticipants, dateTimeLabel, tasksOf } from '../services/data';
 import type { Claim, MeetingDoc, Revision } from '../types';
-export function useLoad<T>(loader: () => Promise<T>, deps: unknown[] = []) {
-  const [value, setValue] = useState<T>();
+// Pages with a cacheKey keep their last result between visits: they show it immediately and refresh quietly in
+// the background (stale-while-revalidate), instead of blanking the screen with "Loading workspace" every time.
+const loadCache = new Map<string, unknown>();
+export function useLoad<T>(
+  loader: () => Promise<T>,
+  deps: unknown[] = [],
+  cacheKey?: string
+) {
+  const cached = cacheKey ? (loadCache.get(cacheKey) as T | undefined) : undefined;
+  const [value, setValue] = useState<T | undefined>(cached);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cached === undefined);
+  const [refreshing, setRefreshing] = useState(false);
   const [version, setVersion] = useState(0);
   useEffect(() => {
     let active = true;
-    setLoading(true);
+    const have = cacheKey ? (loadCache.get(cacheKey) as T | undefined) : undefined;
     setError('');
-    setValue(undefined);
+    if (have !== undefined) {
+      setValue(have);
+      setLoading(false);
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+      setValue(undefined);
+    }
     loader()
       .then((v) => {
+        if (cacheKey) loadCache.set(cacheKey, v);
         if (active) setValue(v);
       })
       .catch((e) => {
-        if (active) setError(errorMessage(e));
+        // A failed background refresh keeps showing the data we already have.
+        if (active && have === undefined) setError(errorMessage(e));
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       });
     return () => {
       active = false;
@@ -40,6 +61,7 @@ export function useLoad<T>(loader: () => Promise<T>, deps: unknown[] = []) {
     setValue,
     error,
     loading,
+    refreshing,
     reload: () => setVersion((n) => n + 1),
   };
 }
@@ -97,8 +119,8 @@ export function PageTitle({
   action,
 }: {
   eyebrow?: string;
-  title: string;
-  description: string;
+  title: ReactNode;
+  description: ReactNode;
   action?: ReactNode;
 }) {
   return (
@@ -106,7 +128,7 @@ export function PageTitle({
       <div>
         <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
-        <p>{description}</p>
+        <div>{typeof description === 'string' ? <p>{description}</p> : description}</div>
       </div>
       {action}
     </header>
@@ -122,6 +144,19 @@ export function Claims({ items, title }: { items: Claim[]; title?: string }) {
             <p>{c.text}</p>
             <div className="claim-meta">
               <Badge>{c.assessment.replaceAll('_', ' ')}</Badge>
+              {c.ambiguity_reason && (
+                <span
+                  className="claim-ambiguity-reason"
+                  style={{
+                    fontSize: '0.78rem',
+                    color: '#8b4b45',
+                    marginLeft: '8px',
+                    fontStyle: 'italic',
+                  }}
+                >
+                  Ambiguity: {c.ambiguity_reason}
+                </span>
+              )}
               {c.evidence.length > 0 && (
                 <details>
                   <summary>
@@ -164,7 +199,7 @@ export function MeetingTable({
         <thead>
           <tr>
             <th>Meeting</th>
-            <th>Date</th>
+            <th>Date &amp; time</th>
             <th>Participants</th>
             <th>Action items</th>
             <th>Status</th>
@@ -183,8 +218,8 @@ export function MeetingTable({
                   {m.meeting_title || 'Untitled meeting'}
                 </Link>
               </td>
-              <td>{dateLabel(m.date)}</td>
-              <td>{m.participants?.join(', ') || 'Not recorded'}</td>
+              <td>{dateTimeLabel(m.date, m.created_at)}</td>
+              <td>{cleanParticipants(m.participants).join(', ') || 'Not recorded'}</td>
               <td>{tasksOf(m).length}</td>
               <td>
                 <Badge>{m.status || 'unknown'}</Badge>

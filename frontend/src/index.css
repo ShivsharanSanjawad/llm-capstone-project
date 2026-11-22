@@ -6,3 +6,5 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .delete-button{color:var(--danger);border-color:#e3c6bd;font-size:.75rem;white-space:nowrap}.delete-button:hover{background:#f9eeea}
+
+.date-filter{flex:0 0 auto}.date-filter input{padding:9px 10px;font-size:.8rem}.filters>.small{width:100%}

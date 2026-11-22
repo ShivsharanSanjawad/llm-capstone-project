@@ -8,7 +8,7 @@ import {
   within,
 } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import { Claims, MeetingTable, ErrorNotice, Loading } from './ui';
+import { Claims, MeetingTable, ErrorNotice, Loading, useLoad } from './ui';
 import Meetings from '../pages/Meetings';
 import Assistant from '../pages/Assistant';
 import { api } from '../services/api';
@@ -333,5 +333,24 @@ it('allows manual speaker turns within a block without inventing timestamps', as
       { text: 'First speaker.', timestamp: '00:00:02', speaker: null },
       { text: 'Second speaker.', timestamp: null, speaker: 'Speaker 2' },
     ],
+  });
+});
+
+describe('useLoad cache', () => {
+  function Probe({ loader }: { loader: () => Promise<string> }) {
+    const data = useLoad(loader, [], 'probe');
+    return <p>{data.loading ? 'spinner' : data.value}</p>;
+  }
+  it('shows the previous result instantly on a later visit instead of a spinner', async () => {
+    const first = vi.fn().mockResolvedValue('v1');
+    const view = render(<Probe loader={first} />);
+    expect(screen.getByText('spinner')).toBeTruthy();
+    await screen.findByText('v1');
+    view.unmount();
+    const second = vi.fn().mockResolvedValue('v2');
+    render(<Probe loader={second} />);
+    expect(screen.getByText('v1')).toBeTruthy(); // cached value, no spinner
+    expect(screen.queryByText('spinner')).toBeNull();
+    await screen.findByText('v2'); // refreshed in the background
   });
 });

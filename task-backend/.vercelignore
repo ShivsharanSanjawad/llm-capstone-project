@@ -7,3 +7,7 @@ src/
 pyproject.toml
 uv.lock
 .python-version
+storage/
+factual_tasks_backup*.json
+*.log
+MINUTES_MODULE_README.md

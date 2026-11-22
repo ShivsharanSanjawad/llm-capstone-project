@@ -12,7 +12,7 @@ class Settings(BaseModel):
     length_retries: int = Field(default=2, ge=0, le=4)
     chunk_tokens: int = Field(default=2000, ge=500)
     requests_per_minute: int = Field(default=20, ge=1)
-    tokens_per_minute: int = Field(default=8000, ge=1000)
+    tokens_per_minute: int = Field(default=36000, ge=1000)
     max_concurrency: int = Field(default=1, ge=1, le=8)
     cache_ttl_seconds: float = Field(default=900, ge=0)
     cache_entries: int = Field(default=128, ge=0)
@@ -21,7 +21,7 @@ class Settings(BaseModel):
     max_retries: int = Field(default=3, ge=0, le=8)
     enable_verification: bool = True
     storage_mode: str = Field(default="mongodb", pattern="^(auto|mongodb)$")
-    context_tokens: int = Field(default=16000, ge=4000)
+    context_tokens: int = Field(default=32000, ge=4000)
     max_input_chars: int = Field(default=1000000, ge=100)
     max_calls: int = Field(default=80, ge=1)
     total_timeout_seconds: float = Field(default=600, gt=0)

@@ -84,7 +84,7 @@ def test_enrichment_batches_preserve_task_ids_and_cross_task_catalog():
     {"transcript_text":"Priya: Fix the release bug."},
     {"transcript":[{"text":"Priya: Fix the release bug.","timestamp":"00:10"}]},
 ])
-def test_real_task_and_minutes_transport_contracts_with_length_recovery(monkeypatch,source):
+def test_process_then_minutes_transport_contracts_with_length_recovery(monkeypatch,source):
     import main
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -93,13 +93,16 @@ def test_real_task_and_minutes_transport_contracts_with_length_recovery(monkeypa
     factual=FactualExtraction(meeting_title="Release",date="",tasks=[ExplicitTask(task_id="T1",description="Fix release bug")])
     inferred=ContextualInference(enriched_tasks=[EnrichedTask(task_id="T1",description="Fix release bug",owner=None,missing_owner=True,deadline=None,missing_deadline=True,priority="Medium",explicit_prerequisites=[])])
     minutes=Minutes(executive_summary=Claim(text="Release bug discussed"))
+    # Task extraction/inference now run through main.request_structured_completion (a direct HTTP call with its own
+    # prompts and rate-limit retry), so they are stubbed here. The minutes call still goes through LLMService and must
+    # recover from one truncated ("length") response.
+    monkeypatch.setattr(main,"run_factual_extraction",AsyncMock(return_value=factual))
+    monkeypatch.setattr(main,"run_contextual_inference",AsyncMock(return_value=inferred))
     sdk=NS(chat=NS(completions=NS(create=AsyncMock(side_effect=[
-        response("stop",factual.model_dump_json()),response("length"),response("stop",inferred.model_dump_json()),
         response("length"),response("stop",minutes.model_dump_json()),
     ]))))
     settings=Settings(provider="openai",max_output_tokens=512,enable_verification=False)
     llm=LLMService(settings,sdk)
-    monkeypatch.setattr(main,"llm_client",sdk)
     monkeypatch.setattr(main,"llm_service",llm)
     processed=TestClient(main.app).post("/api/meetings/process",json={"meeting":{"title":"Release"},**source})
     assert processed.status_code==200,processed.text
@@ -110,7 +113,7 @@ def test_real_task_and_minutes_transport_contracts_with_length_recovery(monkeypa
     assert generated.status_code==201,generated.text
     assert generated.json()["meeting_id"]==meeting_id
     assert generated.json()["status"]=="draft"
-    assert sdk.chat.completions.create.await_count==5
+    assert sdk.chat.completions.create.await_count==2
 
 
 def test_call_cache_and_concurrent_call_coalescing():

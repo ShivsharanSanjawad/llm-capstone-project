@@ -5,14 +5,16 @@ from time import monotonic
 from uuid import uuid4
 from fastapi import HTTPException
 from database import database
+from .pricing import estimate_cost, load_overrides
 logger = logging.getLogger("minutes")
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 class Monitor:
-    def __init__(self, collection=None):
+    def __init__(self, collection=None, pricing_file=None):
         self._collection = collection
+        self._pricing_file = pricing_file
 
     @property
     def collection(self):
@@ -38,13 +40,25 @@ class Monitor:
         try:
             cursor = self.collection.find({}, {"_id":0}).sort("started_at", -1).limit(1000)
             rows = [row async for row in cursor]
+            # Price every row from its stored token counts (works for history saved before pricing existed).
+            overrides = load_overrides(self._pricing_file)
+            for row in rows:
+                priced = estimate_cost(row, overrides)
+                if priced:
+                    row.update(priced)
+            priced_rows = [r for r in rows if r.get("estimated_cost_usd") is not None]
+            unpriced = len(rows) - len(priced_rows)
+            estimated_rows = sum(r.get("cost_basis") == "estimated_tokens" for r in priced_rows)
             return dict(scope="latest 1000 persisted generation requests", requests=len(rows),
                 succeeded=sum(r["status"]=="succeeded" for r in rows), failed=sum(r["status"]=="failed" for r in rows),
                 llm_calls=sum(r["calls"] for r in rows), retries=sum(r["retries"] for r in rows), recent=rows[:50],
                 average_duration_seconds=sum(r["duration_seconds"] for r in rows)/len(rows) if rows else None,
                 input_tokens=sum(r["input_tokens"] for r in rows), output_tokens=sum(r["output_tokens"] for r in rows),
                 usage_complete=all(r["usage_complete"] for r in rows),
-                estimated_cost_usd=sum(r["estimated_cost_usd"] for r in rows) if rows and all(r.get("estimated_cost_usd") is not None for r in rows) else None)
+                estimated_cost_usd=sum(r["estimated_cost_usd"] for r in priced_rows) if priced_rows else None,
+                cost_priced_requests=len(priced_rows), cost_unpriced_requests=unpriced,
+                cost_estimated_requests=estimated_rows,
+                cost_note="Paid-tier list prices; free tiers bill $0. Cached-input discounts are not applied.")
         except HTTPException:
             raise
         except Exception:

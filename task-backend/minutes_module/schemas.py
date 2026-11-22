@@ -40,6 +40,7 @@ class Claim(Strict):
     text: str = Field(min_length=1)
     evidence: list[Evidence] = Field(default_factory=list)
     assessment: Literal["supported", "potentially_unsupported", "ambiguous", "conflicting"] = "ambiguous"
+    ambiguity_reason: str | None = None
 
 class Topic(Strict):
     topic: str

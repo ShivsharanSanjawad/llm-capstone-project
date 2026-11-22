@@ -8,6 +8,7 @@ from .schemas import GenerateRequest, EditRequest, ApprovalRequest, Revision, Mi
 from .config import Settings
 from .llm_service import LLMService, LLMError, generation_key
 from .monitoring import Monitor, utcnow
+from .pricing import estimate_cost, load_overrides
 from .storage import Store, Conflict
 from .summarizer import Summarizer
 from .task_adapter import TaskAdapter
@@ -21,7 +22,7 @@ class Runtime:
         self.llm = llm or LLMService(self.settings)
         self.store = store or Store(self.settings)
         self.adapter = adapter or TaskAdapter()
-        self.monitor = Monitor()
+        self.monitor = Monitor(pricing_file=self.settings.pricing_file)
         self._jobs = {}
         logger = logging.getLogger("minutes")
         logger.setLevel(self.settings.log_level)
@@ -87,12 +88,7 @@ class Runtime:
                 timeout=self.settings.total_timeout_seconds,
             )
             record["verification"] = {"flag_count":len(verification["flags"])}
-            record["estimated_cost_usd"] = None
-            if self.settings.pricing_file and record["usage_complete"]:
-                pricing = json.loads(self.settings.pricing_file.read_text())
-                rate = pricing.get(f"{self.llm.provider}/{self.llm.model}")
-                if rate:
-                    record["estimated_cost_usd"] = (record["input_tokens"]*rate["input_per_million"]+record["output_tokens"]*rate["output_per_million"])/1000000
+            record.update(estimate_cost(record, load_overrides(self.settings.pricing_file)) or {"estimated_cost_usd": None})
             generation = {k:v for k,v in record.items() if k!="_clock"}
             generation.update(status="succeeded", completed_at=utcnow(),
                 duration_seconds=round(monotonic()-record["_clock"], 3), duration_scope="LLM pipeline before storage")

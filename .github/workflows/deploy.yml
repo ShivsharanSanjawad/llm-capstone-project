@@ -1,0 +1,111 @@
+# Auto-deploy to Vercel production when main changes (or run it by hand from the Actions tab).
+# It runs ./deploy.sh, so CI behaves exactly like a local deploy: build and test, stage a production
+# build, smoke-test it, and only then promote it. A failed check never changes the live site.
+#
+# One-time setup: add the secrets listed in DEPLOYMENT.md ("Auto-deploy pipeline").
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to deploy
+        type: choice
+        options: [all, backend, frontend]
+        default: all
+
+# Never run two production deploys at once; queue the newer one instead of cancelling a running deploy.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      # Optional repository variable to point the website at another backend (default: capstone-api.shivsharan.me).
+      BACKEND_URL: ${{ vars.BACKEND_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to see which folders changed since the previous push
+
+      - name: Check Vercel secrets
+        run: |
+          missing=0
+          for v in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_FRONTEND_PROJECT_ID VERCEL_BACKEND_PROJECT_ID; do
+            if [ -z "${!v:-}" ]; then echo "::error::Missing GitHub secret $v (see DEPLOYMENT.md, Auto-deploy pipeline)"; missing=1; fi
+          done
+          exit $missing
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_FRONTEND_PROJECT_ID: ${{ secrets.VERCEL_FRONTEND_PROJECT_ID }}
+          VERCEL_BACKEND_PROJECT_ID: ${{ secrets.VERCEL_BACKEND_PROJECT_ID }}
+
+      - name: Decide what to deploy
+        id: plan
+        env:
+          MANUAL_TARGET: ${{ inputs.target }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ -n "$MANUAL_TARGET" ]; then
+            target="$MANUAL_TARGET"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            target=all
+          else
+            changed="$(git diff --name-only "$BEFORE" "$AFTER")"
+            echo "$changed"
+            backend=false; frontend=false
+            echo "$changed" | grep -qE '^(task-backend/|deploy\.sh$|\.github/workflows/deploy\.yml$)' && backend=true
+            echo "$changed" | grep -qE '^(frontend/|deploy\.sh$|\.github/workflows/deploy\.yml$)' && frontend=true
+            if   $backend && $frontend; then target=all
+            elif $backend;               then target=backend
+            elif $frontend;              then target=frontend
+            else                              target=none
+            fi
+          fi
+          echo "target=$target" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.plan.outputs.target != 'none'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: astral-sh/setup-uv@v5
+        if: steps.plan.outputs.target != 'none' && steps.plan.outputs.target != 'frontend'
+
+      - name: Link the Vercel projects
+        if: steps.plan.outputs.target != 'none'
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_FRONTEND_PROJECT_ID: ${{ secrets.VERCEL_FRONTEND_PROJECT_ID }}
+          VERCEL_BACKEND_PROJECT_ID: ${{ secrets.VERCEL_BACKEND_PROJECT_ID }}
+        run: |
+          mkdir -p frontend/.vercel task-backend/.vercel
+          printf '{"orgId":"%s","projectId":"%s"}' "$VERCEL_ORG_ID" "$VERCEL_FRONTEND_PROJECT_ID" > frontend/.vercel/project.json
+          printf '{"orgId":"%s","projectId":"%s"}' "$VERCEL_ORG_ID" "$VERCEL_BACKEND_PROJECT_ID" > task-backend/.vercel/project.json
+
+      - name: Backend tests
+        if: steps.plan.outputs.target == 'all' || steps.plan.outputs.target == 'backend'
+        working-directory: task-backend
+        run: |
+          uv sync --frozen
+          uv run pytest tests_minutes -q
+
+      - name: Deploy
+        if: steps.plan.outputs.target != 'none'
+        run: ./deploy.sh ${{ steps.plan.outputs.target }}
+
+      - name: Nothing to deploy
+        if: steps.plan.outputs.target == 'none'
+        run: echo "No backend or frontend files changed in this push, so nothing was deployed."

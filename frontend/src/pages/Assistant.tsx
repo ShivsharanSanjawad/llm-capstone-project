@@ -12,7 +12,7 @@ import {
   Empty,
 } from '../components/ui';
 export default function Assistant() {
-  const meetings = useLoad(api.meetings);
+  const meetings = useLoad(api.meetings, [], 'meetings');
   const [meetingId, setMeetingId] = useState('');
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);

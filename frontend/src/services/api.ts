@@ -52,6 +52,11 @@ const messages: Record<string, string> = {
     'The transcript is empty, too large, or the generation configuration is invalid.',
 
   provider_not_configured: 'No LLM API key is configured on the backend.',
+  request_exceeds_context_budget:
+    'This transcript is too long for one analysis call. Shorten it, or raise MINUTES_CONTEXT_TOKENS on the backend.',
+  request_exceeds_token_rate_budget:
+    'This transcript is larger than the provider tokens-per-minute limit allows. Shorten it, or use a plan or model with a higher limit.',
+  llm_call_limit: 'Too many model calls were needed for this request. Try a shorter transcript.',
   database_unavailable:
     'MongoDB Atlas is unavailable. Check the backend connection.',
   minutes_not_found: 'Minutes have not been generated yet.',
@@ -78,16 +83,35 @@ async function request<T>(
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(base + path, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        ...(options.body instanceof FormData
-          ? {}
-          : { 'Content-Type': 'application/json' }),
-        ...options.headers,
-      },
-    });
+    // Page loads (GET) are idempotent: quietly retry brief network blips and gateway errors,
+    // e.g. a cold-starting serverless backend or a DNS/TLS hiccup. Writes are never retried.
+    const isRead = !options.method || options.method.toUpperCase() === 'GET';
+    const attempts = isRead ? 3 : 1;
+    let response!: Response;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        response = await fetch(base + path, {
+          ...options,
+          signal: controller.signal,
+          headers: {
+            ...(options.body instanceof FormData
+              ? {}
+              : { 'Content-Type': 'application/json' }),
+            ...options.headers,
+          },
+        });
+      } catch (error) {
+        const aborted = error instanceof DOMException && error.name === 'AbortError';
+        if (aborted || attempt === attempts) throw error;
+        await new Promise((r) => setTimeout(r, 400 * attempt));
+        continue;
+      }
+      if ([502, 503, 504].includes(response.status) && attempt < attempts) {
+        await new Promise((r) => setTimeout(r, 400 * attempt));
+        continue;
+      }
+      break;
+    }
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       const detail = data.detail;
@@ -147,8 +171,26 @@ async function request<T>(
     window.clearTimeout(timer);
   }
 }
-const post = <T>(path: string, body?: unknown) =>
-  request<T>(
+// A serverless backend may be asleep. Writes must not be blindly retried (they could create duplicates),
+// so wake the backend with a harmless GET first, at most once a minute.
+let lastWarm = 0;
+async function ensureWarm() {
+  if (import.meta.env.MODE === 'test' || Date.now() - lastWarm < 60000) return;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await request('/health', {}, 15000);
+      lastWarm = Date.now();
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 800 * attempt));
+    }
+  }
+}
+// Start waking the backend as soon as the site opens.
+if (typeof window !== 'undefined') void ensureWarm();
+const post = async <T>(path: string, body?: unknown) => {
+  await ensureWarm();
+  return request<T>(
     path,
     {
       method: 'POST',
@@ -156,9 +198,11 @@ const post = <T>(path: string, body?: unknown) =>
     },
     710000
   );
+};
 const id = encodeURIComponent;
 export const api = {
-  transcribe: (file: File) => {
+  transcribe: async (file: File) => {
+    await ensureWarm();
     const body = new FormData();
     body.append('file', file);
     return request<{
@@ -172,6 +216,25 @@ export const api = {
     request<{ status: string; meeting_id: string }>(
       '/api/meetings/' + id(meetingId),
       { method: 'DELETE' }
+    ),
+  updateMeeting: (
+    meetingId: string,
+    updates: { meeting_title?: string; participants?: string[] }
+  ) =>
+    request<{ status: string; meeting_id: string; meeting_title?: string; participants?: string[] }>(
+      '/api/meetings/' + id(meetingId),
+      {
+        method: 'PATCH',
+        body: JSON.stringify(updates),
+      }
+    ),
+  updateMeetingTitle: (meetingId: string, meeting_title: string) =>
+    request<{ status: string; meeting_id: string; meeting_title: string }>(
+      '/api/meetings/' + id(meetingId),
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ meeting_title }),
+      }
     ),
   health: () => request<Health>(minutes + '/health'),
   async meetings(): Promise<MeetingDoc[]> {
@@ -188,8 +251,29 @@ export const api = {
   },
   meeting: (meetingId: string) =>
     request<MeetingDoc>('/api/meetings/' + id(meetingId)),
-  process: (input: ProcessInput) =>
-    post<ProcessResult>('/api/meetings/process', input),
+  async process(input: ProcessInput): Promise<ProcessResult> {
+    const transient = (e: unknown) =>
+      e instanceof ApiError && [0, 429, 502, 503, 504].includes(e.status);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await post<ProcessResult>('/api/meetings/process', input);
+      } catch (e) {
+        if (!transient(e) || attempt >= 3) throw e;
+        const saved = (e as ApiError).detail?.meeting_id;
+        // The factual tasks were already saved: finish that meeting instead of creating a duplicate.
+        if (typeof saved === 'string' && saved) {
+          await new Promise((r) => setTimeout(r, 1500 * attempt));
+          try {
+            await api.infer(saved);
+          } catch {
+            throw e; // keep the original error: it carries the saved meeting id for manual retry
+          }
+          return { status: 'success', meeting_id: saved };
+        }
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+  },
   infer: (meetingId: string) => post('/api/v1/infer-context/' + id(meetingId)),
   async minutesList(): Promise<Revision[]> {
     const all: Revision[] = [];

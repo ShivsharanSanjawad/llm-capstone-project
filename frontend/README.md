@@ -10,7 +10,7 @@ npm run test
 npm run build
 ```
 
-Node 22.12+; development URL http://localhost:5173. Set VITE_API_BASE_URL in .env.local if the backend is elsewhere. Never put provider keys or MongoDB credentials in frontend environment variables. Start the required Atlas-backed FastAPI server separately. No sample responses are used as application data.
+Node 22.12+; development URL http://localhost:5173. Set VITE_API_BASE_URL in .env.local if the backend is elsewhere (production uses https://capstone-api.shivsharan.me; see ../DEPLOYMENT.md). Never put provider keys or MongoDB credentials in frontend environment variables. Start the required Atlas-backed FastAPI server separately. No sample responses are used as application data.
 
 The frontend uses saved backend data throughout; no mock data is used in the application.
 

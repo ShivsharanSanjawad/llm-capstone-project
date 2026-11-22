@@ -69,6 +69,7 @@
             <button id="clearButton" class="text-button">Clear</button>
           </div>
         </div>
+        <p id="participantsDetected" class="hint" style="margin: 4px 0 10px; font-size: 11px;">Participants: auto-detected from Google Meet</p>
 
         <div id="manualInputBox" style="display: none; margin-bottom: 10px;">
           <textarea id="manualText" rows="2"
@@ -122,6 +123,12 @@
             <div class="meeting-title-row">
               <span class="result-label">MEETING</span>
               <h3 id="resultsMeetingTitle" class="results-meeting-title"></h3>
+              <button id="editMeetingTitleBtn" type="button" class="icon-button edit-title-btn" title="Edit meeting title" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;opacity:0.8;">✏️</button>
+            </div>
+            <div id="titleEditContainer" style="display:none; margin: 4px 0 10px; gap: 6px; align-items: center;">
+              <input id="editMeetingTitleInput" type="text" style="flex:1; padding:5px 8px; font-size:13px; border:1px solid #ccd3e0; border-radius:4px;" />
+              <button id="saveMeetingTitleBtn" type="button" class="primary" style="padding:5px 10px; font-size:12px;">Save</button>
+              <button id="cancelMeetingTitleBtn" type="button" class="secondary" style="padding:5px 10px; font-size:12px;">Cancel</button>
             </div>
             <p id="factualSummary" class="result-summary"></p>
             <div id="factualTasksList" class="tasks-list"></div>

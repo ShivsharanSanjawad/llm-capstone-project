@@ -1,3 +1,6 @@
+# Dependency list used by the VERCEL deployment (.vercelignore hides pyproject.toml, so Vercel installs this file).
+# Audio transcription packages (faster-whisper, av, numpy) are intentionally NOT here: too large for serverless.
+# Local development and the Docker/GCP image use pyproject.toml + uv.lock, which include them.
 agent-detector==2.0.0
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -66,3 +69,6 @@ urllib3==2.8.0
 uvicorn==0.54.0
 watchfiles==1.3.0
 websockets==16.1.1
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
+reportlab>=4,<6

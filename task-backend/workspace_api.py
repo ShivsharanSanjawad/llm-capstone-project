@@ -115,8 +115,13 @@ def deterministic_answer(question, doc, revision, segments):
                         text += ". Priority: " + task["priority"]
                     if task.get("status"):
                         text += ". Status: " + task["status"]
-                result.append(Claim(text=text,evidence=[Evidence(segment_id="task:"+task["task_id"],excerpt=json.dumps(task,ensure_ascii=False))],
-                    assessment="ambiguous" if task.get("owner_inferred") or task.get("deadline_inferred") else "supported"))
+                is_inferred = bool(task.get("owner_inferred") or task.get("deadline_inferred"))
+                result.append(Claim(
+                    text=text,
+                    evidence=[Evidence(segment_id="task:"+task["task_id"],excerpt=json.dumps(task,ensure_ascii=False))],
+                    assessment="ambiguous" if is_inferred else "supported",
+                    ambiguity_reason="Owner or deadline was contextually inferred rather than explicitly stated aloud." if is_inferred else None
+                ))
             if not tasks and intent=="tasks" and minutes:
                 for claim in minutes.follow_up_items:
                     stored(claim)
@@ -129,7 +134,12 @@ def deterministic_answer(question, doc, revision, segments):
             if "summary" not in intents and not matching_tasks(question,[{"task_id":segment.segment_id,"description":segment.text}]):
                 continue
             if "summary" in intents or any(re.search(patterns.get(intent,r"(?!)"),segment.text,re.I) for intent in intents):
-                result.append(Claim(text=segment.text,evidence=[Evidence(segment_id=segment.segment_id,timestamp=segment.timestamp,excerpt=segment.text)],assessment="ambiguous"))
+                result.append(Claim(
+                    text=segment.text,
+                    evidence=[Evidence(segment_id=segment.segment_id,timestamp=segment.timestamp,excerpt=segment.text)],
+                    assessment="ambiguous",
+                    ambiguity_reason="Direct transcript match without formal verified decision consensus."
+                ))
             if len(result)>=5:
                 break
     unique = {}
@@ -144,6 +154,25 @@ def create_workspace_router(runtime):
     @router.delete("/meetings/{meeting_id}")
     async def delete_meeting(meeting_id: str):
         return await delete_meeting_doc(meeting_id)
+
+    @router.patch("/meetings/{meeting_id}")
+    async def update_meeting_title(meeting_id: str, payload: dict):
+        new_title = payload.get("meeting_title") or payload.get("title")
+        if not new_title or not str(new_title).strip():
+            raise HTTPException(422, detail="Meeting title cannot be empty")
+        new_title = str(new_title).strip()
+        updated = await update_meeting_doc(meeting_id, {"meeting_title": new_title})
+        if not updated:
+            raise HTTPException(404, detail={"code":"meeting_not_found"})
+        try:
+            if database.db is not None:
+                await database.collection("meeting_minutes").update_many(
+                    meeting_query(meeting_id),
+                    {"$set": {"minutes.title": new_title, "meeting.title": new_title}}
+                )
+        except Exception:
+            pass
+        return {"status": "success", "meeting_id": meeting_id, "meeting_title": new_title}
 
     @router.patch("/meetings/{meeting_id}/tasks/{task_id}/status")
     async def update_status(meeting_id: str, task_id: str, request: StatusUpdate):

@@ -17,6 +17,38 @@
   let nextTurnId = 1;
   const recentTurns = new Map(); // turnId -> lastSentText
   let debounceTimer = null;
+  let participantInterval = null;
+  let watchdogInterval = null;
+  let observer = null;
+
+  function cleanup() {
+    try {
+      if (participantInterval) { clearInterval(participantInterval); participantInterval = null; }
+      if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+      if (observer) { observer.disconnect(); observer = null; }
+      window.__mmcCaptionsObserver = null;
+    } catch (_) {}
+  }
+
+  function safeSendMessage(msg) {
+    try {
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.id) {
+        cleanup();
+        return;
+      }
+      const res = chrome.runtime.sendMessage(msg);
+      if (res && typeof res.catch === "function") {
+        res.catch((err) => {
+          if (err && String(err.message || "").includes("Extension context invalidated")) {
+            cleanup();
+          }
+        });
+      }
+    } catch (_) {
+      cleanup();
+    }
+  }
 
   function log(...args) {
     console.log("[Meeting Minutes]", ...args);
@@ -62,7 +94,10 @@
 
   // ── Names: own name + participants (independent of recording) ─────────────
   const isYou = (n) => /^(you|me)$/i.test((n || "").trim());
-  const okName = (n) => n && n.length >= 2 && n.length <= 40 && !isYou(n) && !/[@\d]{3,}/.test(n);
+  // Google Meet puts button labels ("Mute", "Pin X to your main screen", "Reframe", ...) inside the same tiles as names.
+  const UI_TEXT = /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|your main screen|someone else|can't|cannot|you can|options|menu|settings|meeting|joined|left|waiting|admit|deny)\b/i;
+  const okName = (n) => n && n.length >= 2 && n.length <= 40 && n.split(/\s+/).length <= 5 &&
+    !isYou(n) && !/[@\d]{3,}/.test(n) && !UI_TEXT.test(n);
 
   function getOwnName() {
     // 1. Google account button: aria-label="Google Account: Full Name (email)"
@@ -88,11 +123,17 @@
     if (own) names.add(own);
     document.querySelectorAll("[data-participant-id]").forEach((tile) => {
       if (tile.querySelector("[data-self-name]")) return;
-      for (const el of tile.querySelectorAll("span.notranslate, div.notranslate, span, div")) {
-        if (el.children.length) continue;
-        const t = el.textContent.trim();
-        if (okName(t) && /^[\p{L}][\p{L}\s.'-]*$/u.test(t)) { names.add(t); break; }
-      }
+      // Try the name element(s) first, then fall back to any leaf text. Both are filtered through okName().
+      const pickName = (selector) => {
+        for (const el of tile.querySelectorAll(selector)) {
+          if (el.children.length) continue;
+          const t = el.textContent.trim();
+          if (okName(t) && /^[\p{L}][\p{L}\s.'-]*$/u.test(t)) return t;
+        }
+        return "";
+      };
+      const name = pickName("span.notranslate, div.notranslate") || pickName("span, div");
+      if (name) names.add(name);
     });
     return Array.from(names);
   }
@@ -100,10 +141,10 @@
   function sendParticipants() {
     const names = collectParticipants();
     if (names.length) {
-      chrome.runtime.sendMessage({ type: "meet-participants", names }).catch(() => {});
+      safeSendMessage({ type: "meet-participants", names });
     }
   }
-  setInterval(sendParticipants, 3000);
+  participantInterval = setInterval(sendParticipants, 3000);
   setTimeout(sendParticipants, 1000);
 
   // ── Main extraction routine ───────────────────────────────────────────────
@@ -203,14 +244,20 @@
         const formatted = `${turn.speaker}: ${turn.text}`;
         log(`[${turn.turnId}] ${turn.speaker}: ${turn.text.slice(0, 45)}...`);
 
-        chrome.runtime.sendMessage({
+        safeSendMessage({
           type: "meet-caption",
           turnId: turn.turnId,
           speaker: turn.speaker,
           text: formatted,
           rawText: turn.text,
-          timestamp: new Date().toISOString(),
-        }).catch(() => {});
+          timestamp: new Date().toLocaleTimeString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            hour12: false,
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+        });
       }
     }
   }
@@ -221,7 +268,7 @@
     debounceTimer = setTimeout(extractCaptions, 120);
   }
 
-  const observer = new MutationObserver(onMutation);
+  observer = new MutationObserver(onMutation);
   observer.observe(document.body, {
     childList: true,
     subtree: true,
@@ -230,8 +277,8 @@
   window.__mmcCaptionsObserver = observer;
 
   // Heartbeat watchdog (1.5 s)
-  setInterval(extractCaptions, 1500);
+  watchdogInterval = setInterval(extractCaptions, 1500);
 
-  chrome.runtime.sendMessage({ type: "meet-captions-ready" }).catch(() => {});
+  safeSendMessage({ type: "meet-captions-ready" });
   log("Speaker-isolated caption extractor ready.");
 })();

@@ -84,6 +84,16 @@ function formatTime(ms) {
   return `${m}:${r}`;
 }
 
+function getISTTimestamp() {
+  return new Date().toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function elapsed() {
   return state.startedAt ? Date.now() - state.startedAt : 0;
 }
@@ -93,7 +103,7 @@ function addEntry(text, timestamp) {
   const cleaned = (text || "").trim();
   if (!cleaned) return;
   state.entries.push({
-    timestamp: timestamp || formatTime(elapsed()),
+    timestamp: timestamp || getISTTimestamp(),
     text: cleaned,
     source: state.mode,
   });
@@ -102,15 +112,18 @@ function addEntry(text, timestamp) {
 }
 
 // Auto-fill the Participants field with speaker names captured from Meet
+const PARTICIPANT_UI_TEXT = /\b(pin|unpin|mute|unmute|reframe|remove|spotlight|present|presenting|turn (on|off)|more options|raise hand|captions?|camera|microphone|main screen|someone else|can't|cannot|you can|options|menu|settings|meeting)\b/i;
 function addParticipant(name) {
   const n = (name || "").trim();
   if (!n || /^you$/i.test(n)) return;
+  if (n.split(/\s+/).length > 5 || PARTICIPANT_UI_TEXT.test(n)) return; // Meet button text, not a person
   if (state.participants.some((x) => x.toLowerCase() === n.toLowerCase())) return;
   state.participants.push(n);
-  $("participantsDetected").textContent = `Participants: ${state.participants.join(", ")}`;
+  const el = $("participantsDetected");
+  if (el) el.textContent = `Participants: ${state.participants.join(", ")}`;
 }
 
-function updateOrAddTurnEntry(turnId, speaker, fullText) {
+function updateOrAddTurnEntry(turnId, speaker, fullText, turnTimestamp) {
   const cleaned = (fullText || "").trim();
   if (!cleaned) return;
 
@@ -141,7 +154,7 @@ function updateOrAddTurnEntry(turnId, speaker, fullText) {
   state.entries.push({
     turnId: turnId || `turn-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     speaker: speaker || "",
-    timestamp: formatTime(elapsed()),
+    timestamp: turnTimestamp || getISTTimestamp(),
     text: cleaned,
     source: state.mode,
   });
@@ -288,7 +301,7 @@ function handleBackgroundMessage(msg) {
   }
 
   if (msg.type === "meet-caption" && state.isRecording && state.mode === MODE.GOOGLE_MEET) {
-    updateOrAddTurnEntry(msg.turnId, msg.speaker, msg.text);
+    updateOrAddTurnEntry(msg.turnId, msg.speaker, msg.text, msg.timestamp);
     // Restore recording banner if we had a disconnect warning
     if (captureBanner.classList.contains("banner-error")) {
       setBanner("recording", "Google Meet captions active",
@@ -314,7 +327,9 @@ function handleBackgroundMessage(msg) {
   if (msg.type === "meet-tab-detected") {
     const t = (msg.title || "").replace(/^Meet\s*[-–]\s*/i, "").replace(/\s*[-–]\s*Google Meet$/i, "").trim();
     const titleEl = $("meetingTitle");
-    if (t && !/^(meet|google meet)$/i.test(t) && !titleEl.value.trim()) titleEl.value = t;
+    if (titleEl && t && !/^(meet|google meet)$/i.test(t) && !titleEl.value.trim()) {
+      titleEl.value = t;
+    }
     if (state.mode === MODE.NONE || state.mode === MODE.GOOGLE_MEET) {
       state.mode = MODE.GOOGLE_MEET;
       setModeButton(MODE.GOOGLE_MEET);
@@ -689,23 +704,69 @@ function renderAnalysisResults(result) {
 
 async function getApiBaseUrl() {
   const settings = await chrome.storage.local.get(["processingEndpoint"]);
-  const url = new URL(settings.processingEndpoint || PROCESSING_ENDPOINT_DEFAULT);
+  const endpoint = settings.processingEndpoint || PROCESSING_ENDPOINT_DEFAULT;
+  const url = new URL(endpoint);
   url.pathname = url.pathname.replace(/\/api\/meetings\/process\/?$/, "").replace(/\/$/, "");
   url.search = "";
   url.hash = "";
   return url;
 }
 
+// A serverless backend can be asleep. POSTs must not be blindly retried (they could create duplicates),
+// so wake the backend with a harmless GET first (at most once a minute) so the real POST hits a warm instance.
+let lastBackendWarm = 0;
+async function warmBackend(anyApiUrl) {
+  if (Date.now() - lastBackendWarm < 60000) return;
+  const health = new URL(anyApiUrl);
+  const apiAt = health.pathname.indexOf("/api/");
+  const prefix = apiAt >= 0 ? health.pathname.slice(0, apiAt) : health.pathname.replace(/\/$/, "");
+  health.pathname = `${prefix}/health`;
+  health.search = "";
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch(health, { signal: controller.signal });
+      clearTimeout(timer);
+      if (response.ok) { lastBackendWarm = Date.now(); return; }
+    } catch (_) { /* network blip or cold start: try again */ }
+    await new Promise((r) => setTimeout(r, 800 * attempt));
+  }
+}
+
 async function postJson(url, body) {
+  await warmBackend(url); // covers every step: extract-factual, infer-context, ...
   const options = { method: "POST" };
   if (body !== undefined) {
     options.headers = { "Content-Type": "application/json" };
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(url, options);
+  // Retry transient failures (cold start, gateway errors, provider hiccups). Every step here is safe to repeat:
+  // extract-factual saves only after it succeeds and infer-context just recomputes the same meeting.
+  let response;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      response = await fetch(url, options);
+    } catch (error) {
+      if (attempt === 3) throw error;
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+      continue;
+    }
+    if ([429, 502, 503, 504].includes(response.status) && attempt < 3) {
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+      continue;
+    }
+    break;
+  }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
-    try { const result = await response.json(); if (result.detail) detail = result.detail; } catch (_) {}
+    try {
+      const result = await response.json();
+      if (result.detail) {
+        const d = result.detail;
+        detail = typeof d === "string" ? d : (d.message || (d.code ? d.code.replace(/_/g, " ") : JSON.stringify(d)));
+      }
+    } catch (_) {}
     throw new Error(detail);
   }
   return response.json();
@@ -714,10 +775,16 @@ async function postJson(url, body) {
 async function extractFacts() {
   if (!state.entries.length) throw new Error("Capture or add transcript text before processing.");
   const baseUrl = await getApiBaseUrl();
+  processStatus.textContent = "Extracting explicitly stated tasks…";
   const snapshot = transcriptText();
   const endpoint = new URL(baseUrl);
   endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/api/v1/extract-factual`;
-  const result = await postJson(endpoint, { transcript_text: snapshot });
+  const payload = {
+    transcript_text: snapshot,
+    participants: (state.participants && state.participants.length) ? state.participants : undefined,
+    meeting_title: (resultsMeetingTitle && resultsMeetingTitle.textContent.trim()) || $("meetingTitle")?.value.trim() || undefined,
+  };
+  const result = await postJson(endpoint, payload);
   if (!result.meeting_id || !result.data || !Array.isArray(result.data.tasks)) {
     throw new Error("The backend returned an unexpected factual extraction response.");
   }
@@ -785,7 +852,8 @@ $("clearButton").addEventListener("click", () => {
   if (state.isRecording) return;
   state.entries = [];
   state.participants = [];
-  $("participantsDetected").textContent = "Participants: auto-detected from Google Meet";
+  const el = $("participantsDetected");
+  if (el) el.textContent = "Participants: auto-detected from Google Meet";
   renderTranscript();
 });
 
@@ -818,6 +886,9 @@ $("addManualBtn").addEventListener("click", () => {
 
 // Demo transcript (uses realistic multi-speaker format)
 $("sampleButton").addEventListener("click", () => {
+  state.participants = ["Alice", "Bob", "Charlie"];
+  const el = $("participantsDetected");
+  if (el) el.textContent = `Participants: ${state.participants.join(", ")}`;
   state.entries = [
     { timestamp: "00:05", text: "Alice: Welcome everyone. Bob, please build the API database migration by Wednesday.", source: "demo" },
     { timestamp: "00:22", text: "Bob: Sure, but Charlie has to finish the schema definition first.", source: "demo" },
@@ -827,6 +898,45 @@ $("sampleButton").addEventListener("click", () => {
   ];
   renderTranscript();
 });
+
+// Title editing
+if ($("editMeetingTitleBtn")) {
+  $("editMeetingTitleBtn").addEventListener("click", () => {
+    const current = $("resultsMeetingTitle").textContent.trim();
+    $("editMeetingTitleInput").value = current;
+    $("titleEditContainer").style.display = "flex";
+    $("editMeetingTitleInput").focus();
+  });
+}
+
+if ($("cancelMeetingTitleBtn")) {
+  $("cancelMeetingTitleBtn").addEventListener("click", () => {
+    $("titleEditContainer").style.display = "none";
+  });
+}
+
+if ($("saveMeetingTitleBtn")) {
+  $("saveMeetingTitleBtn").addEventListener("click", async () => {
+    const newTitle = $("editMeetingTitleInput").value.trim();
+    if (!newTitle) return;
+    $("resultsMeetingTitle").textContent = newTitle;
+    $("titleEditContainer").style.display = "none";
+    if (state.meetingId) {
+      try {
+        const baseUrl = await getApiBaseUrl();
+        const endpoint = new URL(baseUrl);
+        endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/api/meetings/${encodeURIComponent(state.meetingId)}`;
+        await fetch(endpoint, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ meeting_title: newTitle }),
+        });
+      } catch (err) {
+        console.warn("Could not persist title update to backend:", err);
+      }
+    }
+  });
+}
 
 // ── Background keepalive heartbeat ───────────────────────────────────────────
 // Chrome MV3 service workers terminate after ~30 s of inactivity.

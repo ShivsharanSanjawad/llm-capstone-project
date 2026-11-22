@@ -7,12 +7,22 @@ import {
   Badge,
   Empty,
 } from '../components/ui';
-import { dateLabel } from '../services/data';
+import { dateTimeLabel } from '../services/data';
+/** Small costs need more decimals than cents: $0.0018, not $0.00. */
+function usd(value: number) {
+  if (value === 0) return '$0.00';
+  if (value < 0.0001) return '<$0.0001';
+  return '$' + (value < 1 ? value.toFixed(4) : value.toFixed(2));
+}
 export default function Monitoring() {
-  const data = useLoad(async () => ({
-    health: await api.health(),
-    stats: await api.stats(),
-  }));
+  const data = useLoad(
+    async () => ({
+      health: await api.health(),
+      stats: await api.stats(),
+    }),
+    [],
+    'monitoring'
+  );
   return (
     <>
       <PageTitle
@@ -107,12 +117,25 @@ export default function Monitoring() {
                   <h2>
                     {s.estimated_cost_usd === null
                       ? 'Unavailable'
-                      : '$' + s.estimated_cost_usd.toFixed(5)}
+                      : usd(s.estimated_cost_usd)}
                   </h2>
                   <p className="muted">
-                    Requires configured pricing and complete provider-reported
-                    usage. Unknown costs are never treated as zero.
+                    {s.estimated_cost_usd === null
+                      ? 'No recorded request uses a model that is in the price list. Add its rates with a pricing file.'
+                      : 'What this usage would cost at paid-tier list prices. Free tiers bill $0, and cached-input discounts are not applied.'}
                   </p>
+                  {s.estimated_cost_usd !== null && (
+                    <p className="muted small">
+                      {s.cost_priced_requests} of {s.requests} requests priced
+                      {s.cost_estimated_requests
+                        ? `; ${s.cost_estimated_requests} estimated from transcript size because the provider reported no usage`
+                        : ''}
+                      {s.cost_unpriced_requests
+                        ? `; ${s.cost_unpriced_requests} left out (model not in the price list)`
+                        : ''}
+                      .
+                    </p>
+                  )}
                 </section>
               </div>
               <section className="panel">
@@ -142,7 +165,7 @@ export default function Monitoring() {
                             <td>
                               <strong>{log.meeting_id}</strong>
                               <small>
-                                {dateLabel(log.started_at)} ?{' '}
+                                {dateTimeLabel(log.started_at)} ?{' '}
                                 {log.request_id.slice(0, 8)}
                               </small>
                             </td>
@@ -176,6 +199,18 @@ export default function Monitoring() {
                                   Complete usage:{' '}
                                   {log.usage_complete ? 'Yes' : 'No'}
                                 </p>
+                                {log.estimated_cost_usd != null && (
+                                  <p>
+                                    Cost at list price:{' '}
+                                    {usd(log.estimated_cost_usd)}
+                                    {log.cost_basis === 'estimated_tokens'
+                                      ? ' (from estimated tokens)'
+                                      : ' (provider-reported tokens)'}
+                                    {log.pricing_source
+                                      ? ` · ${log.pricing_source}`
+                                      : ''}
+                                  </p>
+                                )}
                               </details>
                             </td>
                           </tr>

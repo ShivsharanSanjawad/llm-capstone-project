@@ -1,0 +1,12 @@
+env
+.env
+.env.*
+.venv/
+__pycache__/
+.pytest_cache/
+tests_minutes/
+storage/
+minutes_data/
+factual_tasks_backup*.json
+.vercel
+*.log

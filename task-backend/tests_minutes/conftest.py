@@ -1,5 +1,10 @@
+import os
 import sys
 from pathlib import Path
+
+# Tests must NEVER reach a real database. main.py loads task-backend/.env when it is imported, and that file holds the real
+# Atlas URL; an existing (even empty) environment variable wins over .env, so blank it before anything imports main.
+os.environ["MONGODB_URL"] = ""
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from types import SimpleNamespace
 from unittest.mock import AsyncMock

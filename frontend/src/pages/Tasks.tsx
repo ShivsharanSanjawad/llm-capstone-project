@@ -5,7 +5,7 @@ import { PageTitle, useLoad, Loading, ErrorNotice } from '../components/ui';
 import TaskTable, { allTasks } from '../components/TaskTable';
 import DependencyGraph from '../components/DependencyGraph';
 export default function Tasks() {
-  const data = useLoad(api.meetings);
+  const data = useLoad(api.meetings, [], 'meetings');
   const [status, setStatus] = useState('');
   const [priority, setPriority] = useState('');
   const [owner, setOwner] = useState('');
