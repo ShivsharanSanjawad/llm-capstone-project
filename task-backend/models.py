@@ -38,6 +38,10 @@ class EnrichedTask(BaseModel):
         default_factory=list, 
         description="Task IDs OR string descriptions of external blockers that logically must happen first, even if not explicitly stated."
     )
+    dependency_evidence: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="For each dependency between tracked tasks, provide prerequisite_task_id, task_id (the dependent task), and the verbatim transcript statement supporting that dependency."
+    )
     status: Literal["pending", "in progress", "completed", "blocked"] = Field(
         default="pending", 
         description="Inferred current status of the task based on the meeting dialogue."
@@ -47,7 +51,7 @@ class ContextualInference(BaseModel):
     enriched_tasks: List[EnrichedTask]
     initial_circular_dependencies: List[Dict[str, str]] = Field(
         default_factory=list,
-        description="Circular dependencies explicitly discussed in the original meeting before any resolution. Each item should contain 'from_task_id', 'to_task_id', and 'description'."
+        description="Each dependency edge in every original transcript cycle. from_task_id is the prerequisite, to_task_id is the dependent task, and description is the verbatim supporting transcript statement."
     )
     resolved_dependencies: List[Dict[str, str]] = Field(
         default_factory=list,

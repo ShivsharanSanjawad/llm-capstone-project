@@ -31,12 +31,38 @@ def analyze_task_graph(
     # 3. Detect unresolved Circular Dependencies in the final execution plan.
     unresolved_cycles = list(nx.simple_cycles(G))
     circular_dependencies = []
+    dependency_evidence = {}
+    for task in enriched_tasks:
+        for item in task.get("dependency_evidence", []):
+            prerequisite_id = item.get("prerequisite_task_id")
+            task_id = item.get("task_id")
+            evidence = item.get("evidence")
+            if prerequisite_id and task_id and evidence:
+                dependency_evidence[(prerequisite_id, task_id)] = evidence
+    for item in contextual_data.get("initial_circular_dependencies", []):
+        prerequisite_id = item.get("from_task_id")
+        task_id = item.get("to_task_id")
+        evidence = item.get("description")
+        if prerequisite_id and task_id and evidence:
+            dependency_evidence.setdefault((prerequisite_id, task_id), evidence)
+
+    cycle_details = []
     for cycle in unresolved_cycles:
         if len(cycle) < 2:
             continue
+        cycle_edges = []
         for index, task_id in enumerate(cycle):
             prerequisite_id = cycle[index - 1]
             circular_dependencies.append({"from": prerequisite_id, "to": task_id})
+            cycle_edges.append({
+                "prerequisite_task_id": prerequisite_id,
+                "task_id": task_id,
+                "evidence": dependency_evidence.get((prerequisite_id, task_id)),
+            })
+        cycle_details.append({
+            "task_ids": cycle + [cycle[0]],
+            "dependencies": cycle_edges,
+        })
     is_feasible = not bool(circular_dependencies)
 
     # Preserve dependencies discussed in the original conversation, even when the
@@ -68,6 +94,7 @@ def analyze_task_graph(
     return {
         "is_feasible": is_feasible,
         "circular_dependencies": circular_dependencies,
+        "cycle_details": cycle_details,
         "initial_circular_dependencies": initial_circular_dependencies,
         "resolved_dependencies": resolved_dependencies,
         "has_resolved_circular_dependencies": bool(initial_circular_dependencies and resolved_dependencies),
