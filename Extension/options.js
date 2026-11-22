@@ -8,21 +8,20 @@ chrome.storage.local.get(["processingEndpoint"]).then((settings) => {
   endpoint.value = settings.processingEndpoint || fallbackEndpoint;
 });
 
-// Check if launched specifically to grant microphone permission
-const params = new URLSearchParams(window.location.search);
-if (params.get("requestMic") === "1") {
+document.getElementById("grantMic").addEventListener("click", async () => {
+  status.className = "";
   status.textContent = "Requesting microphone permission...";
-  navigator.mediaDevices.getUserMedia({ audio: true })
-    .then((stream) => {
-      stream.getTracks().forEach((track) => track.stop());
-      status.className = "success";
-      status.textContent = "✓ Microphone permission granted! You can now close this tab and return to the side panel.";
-    })
-    .catch((err) => {
-      status.className = "error";
-      status.textContent = `Microphone permission denied: ${err.message}. Please click the lock/settings icon in the address bar and set Microphone to Allow.`;
-    });
-}
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    status.className = "success";
+    status.textContent = "Microphone permission granted. Return to the side panel to record.";
+  } catch (err) {
+    status.className = "error";
+    status.textContent = `Microphone permission not granted: ${err.message}. Allow microphone access for the extension in Chrome settings, then try again.`;
+  }
+});
 
 document.getElementById("save").addEventListener("click", async () => {
   const value = endpoint.value.trim() || fallbackEndpoint;

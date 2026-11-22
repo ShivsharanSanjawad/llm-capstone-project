@@ -8,6 +8,7 @@
     "downloads",
     "sidePanel",
     "tabCapture",
+    "activeTab",
     "scripting",
     "tabs",
     "alarms"
