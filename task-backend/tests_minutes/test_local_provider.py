@@ -92,7 +92,16 @@ def test_groq_and_gemini_requests_are_unchanged(monkeypatch):
     call(svc)
     body = sent[0]["body"]
     assert sent[0]["url"].startswith("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
-    assert body["response_format"] == {"type": "json_object"} and body["reasoning_effort"] == "low"
+    assert body["response_format"] == {"type": "json_object"} and body["reasoning_effort"] == "low"   # Gemini default
+
+
+def test_gemini_reasoning_effort_is_configurable(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "mk")
+    for value, expected in (("high", "high"), ("medium", "medium"), ("nonsense", "low")):
+        monkeypatch.setenv("GEMINI_REASONING_EFFORT", value)
+        svc, sent = service("gemini", monkeypatch, model="gemini-3.5-flash-lite")
+        call(svc)
+        assert sent[0]["body"]["reasoning_effort"] == expected
 
 
 def test_local_is_never_chosen_automatically():

@@ -1,210 +1,259 @@
 # Meeting Minutes & Task Intelligence System
 
-An end-to-end meeting intelligence system that captures live transcripts through a Chrome Extension or accepts uploaded and pasted transcripts through a React website. It extracts factual action items, infers contextual task details, analyzes dependencies and blockers, generates evidence-linked meeting minutes, and supports human review, approval, revision history, PDF/Excel/DOCX export, meeting Q&A, and LLM monitoring.
+Turns a meeting conversation into structured minutes and a tracked task list. Transcripts come from a Chrome extension that reads live Google Meet captions, or are pasted or uploaded on the website. The system extracts the tasks people committed to, fills in owners, exact deadlines and priorities, finds dependencies, circular dependencies and bottlenecks, and writes evidence-linked minutes that a person reviews, approves and exports.
 
-## Live Deployment
+The language model is one part of a pipeline, not the final word: dates, priority scores, dependency cycles and source references are checked by plain code, and anything uncertain is flagged for a person.
 
-- **Web app:** https://capstone-app.shivsharan.me (also https://vizura-frontend.vercel.app)
-- **Backend API:** https://capstone-api.shivsharan.me (also https://vizura-backend.vercel.app); health check at `/`, Swagger at `/docs`
-- **Chrome extension:** load the `Extension/` folder as an unpacked extension; `Extension/config.js` points it at the deployed backend by default.
-- **Audio upload** needs the speech model, which does not fit on Vercel. It works on a local backend or on the optional Docker/GCP backend (see [Deployment](#deployment)).
+## Live deployment
+
+| | URL |
+|---|---|
+| Website | https://capstone-app.shivsharan.me |
+| Backend API | https://capstone-api.shivsharan.me (`/health` shows the active AI provider, `/docs` is Swagger) |
+| Chrome extension | load `Extension/` as an unpacked extension; it points at the deployed backend by default |
+
+Audio upload needs a speech model that does not fit on Vercel; it works on a local backend (see [Audio](#audio-transcription)).
 
 ---
 
-## Architecture Overview
+## Features
+
+- **Two-pass task extraction.** Pass 1 records only what was said aloud (task, owner, deadline wording). Pass 2 adds owners, deadlines, priority, status and dependencies, split into two smaller calls (core fields, then dependencies) so each call stays focused.
+- **Exact deadlines.** The model proposes a calendar date; code checks it (real date, not before the meeting, weekday matches, within two years) and falls back to date rules for wording like "by Friday" or "within 5 days". Counted from the meeting day (IST).
+- **Priority score (0-100).** Deadline urgency (up to 35) + how many tasks this one blocks (up to 30) + the model's importance rating (up to 35). High ≥ 55, Medium ≥ 30, otherwise Low. The breakdown is shown per task.
+- **Dependency graph.** NetworkX finds circular dependencies, bottlenecks and whether the plan is feasible. The graph can be edited on the website; manual edits are kept when the meeting is analysed again.
+- **Evidence-linked minutes.** Topic-wise summary, decisions, unresolved issues and follow-ups. Every line quotes the transcript, and code checks that the quote really exists. Decisions are always marked for confirmation.
+- **Review and export.** Edit drafts, approve with a reviewer name, keep a revision history, export PDF, DOCX and Excel.
+- **Meeting Q&A.** Ask questions about one meeting; answers cite the transcript.
+- **Tracing.** Every pipeline run can be logged to MLflow (DagsHub) with step timings, counts, tokens and cost. Transcripts and names are never sent.
+- **Switchable AI provider.** Gemini, Groq or OpenAI by one setting; a local model through LM Studio for offline testing.
+
+## Architecture
 
 ```mermaid
 graph LR
-    Extension[Chrome Side Panel Extension] -->|"POST /api/v1/extract-factual"| Backend[FastAPI Backend Engine]
-    Extension -->|"POST /api/v1/infer-context/{meeting_id}"| Backend
-    Backend -->|"Pass 1: Strict Factual Extraction"| LLM["LLM: Gemini / Groq / OpenAI"]
-    Backend -->|"Pass 2: Contextual Inference"| LLM
-    Backend -->|"Pass 3: Dependency Graph Analysis"| NetworkX["NetworkX Graph Engine"]
-    Backend -->|"Persistent Storage"| DB[("MongoDB Atlas / Local JSON")]
-    Backend -->|"Tasks + Feasibility + Bottlenecks"| Extension
+    subgraph Browser
+        Meet[Google Meet captions] --> Ext[Chrome extension<br/>Manifest V3 side panel]
+        Web[Web app<br/>React + TypeScript]
+    end
+    subgraph Vercel
+        API[FastAPI backend<br/>combined_app]
+        Site[Website hosting]
+    end
+    Ext -->|HTTPS / JSON| API
+    Web -->|HTTPS / JSON| API
+    Site -.->|serves the app| Web
+    API --> LLM[Shared LLM service<br/>scheduler, cache, retries]
+    LLM --> Prov[Gemini / Groq / OpenAI<br/>or LM Studio locally]
+    API --> Graph[NetworkX graph engine]
+    API --> DB[(MongoDB Atlas)]
+    API -.->|run metrics| MLflow[MLflow on DagsHub]
 ```
 
-1. **Frontend (Browser Extension)**:
-   - Manifest V3 Side Panel extension (`Extension/`).
-   - Captures speech in real-time with timestamps.
-   - Extracts factual tasks from the transcript and displays the meeting title and task descriptions.
-   - Runs contextual inference and graph analysis on request, then displays priorities, deadlines, and schedule bottlenecks.
+One FastAPI app (`task-backend/combined_app.py`) serves both clients. Its parts:
 
-2. **Backend (`task-backend/`)**:
-   - **FastAPI** with CORS enabled for extension and web frontends.
-   - **Pass 1 (`/api/v1/extract-factual`)**: Strict factual extraction (only tasks explicitly spoken aloud); returns a meeting ID.
-   - **Pass 2 (`/api/v1/infer-context/{meeting_id}`)**: Optional AI Project Manager inference (priorities, missing owners, deadlines, inferred dependencies, external blockers).
-   - **Graph Engine (`graph_engine.py`)**: Uses NetworkX to build a directed acyclic graph (DAG), detecting circular dependency deadlocks and surfacing schedule bottlenecks.
-   - **Minutes module (`minutes_module/`)**: evidence-linked minutes with verification flags, human review, revisions, exports and monitoring. Speaker names are only used when the transcript carries a speaker label or says the name; otherwise minutes say "a participant".
-   - **Audio (`audio_processing.py`)**: `POST /api/meetings/transcribe` turns an MP3/WAV/M4A (up to 50 MB / 30 min) into an editable transcript with `faster-whisper`. It runs on CPU, does no speaker recognition, and returns an unsaved transcript for review.
-   - **Storage**: Persists to MongoDB Atlas when configured. If Atlas is missing or unreachable, `main.py` falls back to local JSON storage (`storage/meetings_store.json`, or `/tmp` on Vercel); use that only for quick local demos.
+| Part | File(s) | What it does |
+|---|---|---|
+| Task pipeline | `main.py`, `deadlines.py`, `priority.py` | Pass 1 and Pass 2, exact dates, priority score |
+| Graph engine | `graph_engine.py`, `dependency_edits.py` | Cycles, bottlenecks, feasibility; manual edge edits |
+| Minutes pipeline | `minutes_module/` | Segmenting, map / reduce summarising, source-quote check, revisions, exports |
+| Workspace and Q&A | `workspace_api.py` | Meeting edits, task status, dependency edits, questions |
+| Shared LLM service | `minutes_module/llm_service.py` | One client for every AI call: request pacing, caching, retries, usage and cost records |
+| Tracing | `tracking.py`, `pipeline_metrics.py` | MLflow runs; does nothing unless `MLFLOW_TRACKING_URI` is set |
+| Audio | `audio_processing.py` | MP3/WAV/M4A to editable transcript with faster-whisper (local only) |
+
+### Processing flow
+
+1. **Capture or upload** the transcript (extension, paste, file or audio).
+2. **Pass 1, factual extraction:** only tasks said aloud.
+3. **Pass 2, analysis:** owners, deadlines, priority, status (one call) and dependencies (a second call).
+4. **Code checks:** exact deadlines, priority score, manual dependency edits re-applied.
+5. **Graph analysis:** cycles, bottlenecks, feasibility.
+6. **Minutes** (website, on request): map / reduce over transcript chunks, then the source-quote check.
+7. **Review, approve, export, ask questions.**
+
+The extension runs steps 1-5. The website runs all of them.
 
 ---
 
-## Quickstart
+## Project layout
 
-### 1. Environment Setup
-
-Use **Python 3.11+**, **Node.js 22.12+**, a MongoDB Atlas database user, and an API key for one supported provider. Allow your current IP in Atlas Network Access and give the database user appropriate read/write permissions.
-
-From the project root, create one Python environment and install the backend dependencies. `task-backend/requirements.txt` is the list Vercel installs; `task-backend/pyproject.toml` + `uv.lock` (use `uv sync` inside `task-backend`) additionally include the audio packages:
-
-```powershell
-# Skip environment creation if the root .venv already exists.
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r task-backend\requirements.txt
-# Optional, only for audio transcription (not needed on Vercel):
-python -m pip install faster-whisper av numpy
-
-# Create the configuration file only if it does not already exist.
-if (!(Test-Path task-backend\.env)) {
-    Copy-Item task-backend\.env.example task-backend\.env
-}
+```
+Extension/         Chrome extension (side panel, Meet caption reader, settings page)
+frontend/          React + TypeScript website (Vite)
+task-backend/      FastAPI backend, minutes module, evals, tests
+.github/workflows/ ci.yml (pull requests), deploy.yml (push to main)
+deploy.sh          Manual staged deploy to Vercel
+DEPLOYMENT.md      Deployment runbook, domains, GitHub secrets
 ```
 
-Configure **only `task-backend/.env`**. Example using Groq:
+---
 
-```env
-# MongoDB Atlas is required; replace the placeholders.
-MONGODB_URL=mongodb+srv://YOUR_USER:YOUR_ENCODED_PASSWORD@YOUR_CLUSTER.mongodb.net/?retryWrites=true&w=majority
-MONGODB_DATABASE=meeting_db
+## Run it locally
 
-# Fill one provider key. Keep unused provider keys blank.
-GEMINI_API_KEY=
-GROQ_API_KEY=your_groq_key_here
-OPENAI_API_KEY=
+Needs Python 3.11+, [uv](https://docs.astral.sh/uv/), Node.js 22.12+, a MongoDB Atlas database and an API key for one provider.
 
-MINUTES_LLM_PROVIDER=groq
-MINUTES_LLM_MODEL=openai/gpt-oss-20b
-LLM_MODEL=
+### 1. Backend
 
-MINUTES_ENABLE_VERIFICATION=true
-MINUTES_STORAGE_MODE=mongodb
-MINUTES_REQUESTS_PER_MINUTE=20
-MINUTES_TOKENS_PER_MINUTE=36000
-MINUTES_MAX_CONCURRENCY=1
-
-FRONTEND_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-HOST=127.0.0.1
-PORT=8000
-```
-
-Use a model available to your provider account and set RPM/TPM at or below its actual account/model limits. The scheduler defaults are not a guarantee of your account's quota. URL-encode special characters in the Atlas password.
-
-For Gemini, fill `GEMINI_API_KEY`, set provider to `gemini`, and choose a compatible Gemini model. For OpenAI, fill `OPENAI_API_KEY`, set provider to `openai`, and choose a compatible chat-completions model. Explicit provider selection takes precedence; otherwise the first configured key is selected in Gemini, Groq, OpenAI order. Model selection is `MINUTES_LLM_MODEL`, then `LLM_MODEL`, then the provider default.
-
-The backend reads only `task-backend/.env`; root `.env` and example files are not loaded. Process environment variables take precedence. Restart the backend after configuration changes. Keep `.env`, API keys, Atlas credentials and `.venv/` out of Git.
-
-### 2. Start the Backend
-
-In terminal one, from the project root:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
+```bash
 cd task-backend
-python -m uvicorn combined_app:app --reload --host 127.0.0.1 --port 8000
+uv sync                      # installs everything, including the audio packages
+cp .env.example .env         # then fill it in (see Configuration)
+uv run uvicorn combined_app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Or invoke the shared environment's Python directly without activation:
+Check http://127.0.0.1:8000/health (active provider, database status) and http://127.0.0.1:8000/docs. Run only one backend on port 8000, always `combined_app:app`. The backend refuses to start if Atlas cannot be reached; allow your IP in Atlas Network Access.
 
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn combined_app:app --app-dir task-backend --reload --host 127.0.0.1 --port 8000
-```
+Without uv: `python -m venv .venv`, activate it, `pip install -r task-backend/requirements.txt` (add `faster-whisper av numpy` for audio), then run the same uvicorn command.
 
-Start only one backend on port 8000. Use `combined_app:app` for the complete website and extension API, rather than starting separate `main.py` and `main2.py` servers.
+### 2. Website
 
-Verify backend health at [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) and minutes configuration at [http://127.0.0.1:8000/api/v1/minutes/health](http://127.0.0.1:8000/api/v1/minutes/health). A configured key does not prove provider authentication or quota; generation exercises those. Startup fails if Atlas cannot connect.
-
-Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
-
-### 3. Start the Web Frontend
-
-In terminal two, from the project root:
-
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). No frontend env file is required for this local setup: the API client defaults to `http://127.0.0.1:8000`. If your backend is elsewhere, optionally set `VITE_API_BASE_URL` in `frontend/.env.local` and restart Vite. Never put provider keys or database credentials in frontend variables.
+Open http://localhost:5173. It talks to `http://127.0.0.1:8000` unless `VITE_API_BASE_URL` is set in `frontend/.env.local`. Never put API keys or database credentials in frontend variables.
 
-1. Choose **New meeting**, enter metadata and paste or upload a transcript. `task-backend/minutes_sample_request.json` provides a sample payload.
-2. Submit once: the frontend calls meeting processing, obtains the stored meeting ID, then calls minutes generation for that ID.
-3. Inspect the meeting tabs, edit draft minutes, review evidence/flags, enter a reviewer name and approve. Reviewer names are audit labels, not authenticated identities.
-4. Download PDF/Excel/DOCX, update task statuses, inspect dependencies and ask the assistant about the selected meeting.
-5. If enrichment or minutes generation fails, open the saved meeting and retry that stage instead of submitting another copy.
-6. Use **Delete** in the Meetings list only when you want to permanently remove the meeting and its associated saved records, including approved minutes. Download needed reports first and avoid deletion while generation is running.
+1. **New meeting:** enter a title and participants, then paste or upload a transcript.
+2. The website processes the tasks, then generates the minutes for the saved meeting.
+3. Review the tasks, the dependency graph (with **Edit dependencies** to add or remove links) and the minutes with their evidence and flags.
+4. Enter a reviewer name and approve, then export PDF, DOCX or Excel.
+5. If a step fails, open the saved meeting and retry that step; do not submit the meeting again.
 
-### 4. Load the Chrome Extension
+### 3. Chrome extension
 
-1. Open Chrome at `chrome://extensions` or Edge at `edge://extensions`.
-2. Enable **Developer mode**, click **Load unpacked**, and select the `Extension/` directory.
-3. Open the extension side panel and confirm the processing endpoint in its settings. The default is `https://capstone-api.shivsharan.me/api/meetings/process`; for a local backend use `http://127.0.0.1:8000/api/meetings/process` (edit `Extension/config.js` or the extension's Settings page; any other host must also be listed in `host_permissions` in `Extension/manifest.json`).
-4. Enter the meeting title and participants, then select a capture mode. For Google Meet, enable meeting captions and select **Google Meet Captions** in the extension.
-5. Click **Start recording**, capture the conversation, and stop when finished. Microphone mode captures your voice; available capture behavior depends on browser permissions and support.
-6. Click **Process with Backend** to extract tasks and analyze dependencies.
-7. Open the website to view the saved meeting and generate its minutes if needed. The website also works without the extension running.
-
-### 5. Verify and Test
-
-From the project root, run the offline backend suite and frontend checks:
-
-```powershell
-.\.venv\Scripts\python.exe -B -m pytest task-backend\tests_minutes -q -p no:cacheprovider
-npm --prefix frontend run test
-npm --prefix frontend run build
-```
-
-Backend tests mock provider and MongoDB calls; they do not verify your real quota, credentials or Atlas transaction permissions. Test the live workflow through the website or Swagger: process a transcript, generate minutes, edit/approve, export, change a task status, ask a question, inspect monitoring and refresh saved data.
-
-Use the `meeting_id` returned by processing; it can differ from the transcript payload's original metadata ID. Before minutes exist, a minutes lookup can legitimately return 404. Exports require an approved revision unless `draft=true` is explicitly requested. Generation errors include a safe `detail.code` and available diagnostics; do not repeatedly resubmit a whole meeting to retry a failed later stage.
-
-Deployment and domain setup: [DEPLOYMENT.md](DEPLOYMENT.md). Backend optimization and monitoring notes: [MINUTES_MODULE_README.md](task-backend/MINUTES_MODULE_README.md).
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and choose `Extension/`.
+2. In the extension's **Settings**, set the backend: the default is the deployed API; for a local backend use `http://127.0.0.1:8000/api/meetings/process`.
+3. In Google Meet, turn on captions, open the side panel, choose **Google Meet Captions**, and start recording.
+4. Stop when done, then **Process with Backend**, and **Analyze more** for priorities and dependencies.
+5. After changing extension files, press the reload button on the extension in `chrome://extensions`.
 
 ---
 
-## API Endpoints
+## Configuration
 
-All paths below are exposed by `combined_app:app`. Meeting and minutes list endpoints accept `offset` and `limit` pagination parameters. The minutes list path has no trailing slash.
+The backend reads only `task-backend/.env` locally; on Vercel the same names are set as environment variables. Real environment variables override `.env`. Restart the backend after changes.
 
-| Method | Endpoint | Description |
+### Required
+
+| Variable | Example | Notes |
 |---|---|---|
-| `GET` | `/health` | Healthcheck and active provider status |
-| `POST` | `/api/meetings/process` | End-to-end meeting processing (consumed by extension) |
-| `POST` | `/api/v1/extract-factual` | Pass 1: Strict factual task extraction |
-| `POST` | `/api/v1/infer-context/{id}` | Pass 2: Contextual enrichment & graph analysis |
-| `GET` | `/api/meetings` | List all processed meetings |
-| `GET` | `/api/meetings/{id}` | Retrieve meeting document and graph analysis |
-| `PATCH` | `/api/meetings/{id}` | Rename a meeting or edit its participants |
-| `DELETE` | `/api/meetings/{id}` | Delete a meeting and its saved minutes |
-| `POST` | `/api/meetings/transcribe` | Audio file to transcript (needs faster-whisper; not on Vercel) |
-| `POST` | `/api/meetings/{id}/query` | Ask a question about one meeting |
-| `PATCH` | `/api/meetings/{id}/tasks/{task_id}/status` | Update a task's status |
-| `GET/POST` | `/api/v1/minutes/...` | Generate, edit, approve, export (PDF/XLSX/DOCX) and inspect minutes |
+| `MONGODB_URL` | `mongodb+srv://user:pass@cluster.mongodb.net/...` | One line, no quotes; URL-encode special characters in the password |
+| `LLM_PROVIDER` | `gemini`, `groq`, `openai` or `local` | Which AI provider every call uses. If unset, the first key found wins (Gemini, then Groq, then OpenAI); `local` is never picked automatically |
+| `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` | | Set the one you use; the others may stay set |
+| `FRONTEND_ORIGINS` | `http://localhost:5173` | Allowed website origins (CORS); `https://*.shivsharan.me` and Chrome extensions are always allowed |
+
+### Model limits
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LLM_MODEL` | provider default | Model id; must belong to the chosen provider. Defaults: `gemini-3.5-flash-lite`, `openai/gpt-oss-120b` (Groq), `gpt-4o-mini` |
+| `MINUTES_CONTEXT_TOKENS` | 32000 | Largest request (input + answer) the app will send |
+| `MINUTES_MAX_OUTPUT_TOKENS` | 16384 | Answer limit; starts high so answers are not cut off and retried |
+| `MINUTES_TOKENS_PER_MINUTE` | 36000 | The app's own pacing; keep it at or below your account's real limit |
+| `MINUTES_TIMEOUT_SECONDS` | 90 | Time limit per AI call; keep under Vercel's 300-second limit |
+
+### Optional
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MONGODB_DATABASE` | `meeting_db` | Database name |
+| `SPLIT_ANALYSIS` | `on` | `off` runs Pass 2 as one call instead of two |
+| `GEMINI_REASONING_EFFORT` | `low` | Gemini thinking level: `low` (fastest), `medium` or `high` (slowest, most output tokens) |
+| `MINUTES_ENABLE_VERIFICATION` | `true` | Free check that every minutes line quotes real transcript text |
+| `MINUTES_ENABLE_SEMANTIC_REVIEW` | `false` | Extra AI review of every minutes claim (many more calls and tokens) |
+| `MLFLOW_TRACKING_URI`, `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` | unset | Turn on MLflow tracing (DagsHub: your username and an access token) |
+| `MLFLOW_EXPERIMENT_NAME` | `meeting-intelligence` | MLflow experiment |
+| `AUDIO_WHISPER_MODEL` | `base` | Speech model for audio upload |
+
+### Switching providers
+
+Change `LLM_PROVIDER` and the limits together; the limits must suit the provider.
+
+| Variable | Gemini (paid) | Groq (free tier) | LM Studio (local) |
+|---|---|---|---|
+| `LLM_PROVIDER` | `gemini` | `groq` | `local` |
+| `MINUTES_CONTEXT_TOKENS` | `64000` | `32000` | the context length loaded in LM Studio, e.g. `16384` |
+| `MINUTES_TOKENS_PER_MINUTE` | `400000` | `8000` | `1000000` |
+| `MINUTES_MAX_OUTPUT_TOKENS` | `32768` | unset | unset |
+| other | | | `LOCAL_LLM_MODEL` (id from `http://127.0.0.1:1234/v1/models`), `MINUTES_TIMEOUT_SECONDS=900` |
+
+Groq's free tier allows about 8,000 tokens per minute and 200,000 per day, so roughly 5-10 meetings a day; with Gemini values it returns 429 or 413 errors. LM Studio works only on a local backend: the deployed site cannot reach your computer. Use a non-thinking model (for example Qwen3 4B Instruct 2507) or turn thinking off; small local models miss more dependencies than the cloud models.
+
+---
+
+## Testing and evaluation
+
+```bash
+cd task-backend && uv run pytest tests_minutes -q      # backend, offline (mocks the AI and the database)
+npm --prefix frontend run test                         # frontend unit tests
+npm --prefix frontend run build                        # type check and build
+```
+
+Evals on six hand-labelled meetings (`task-backend/evals/`):
+
+```bash
+cd task-backend
+uv run python -m evals.run_evals                 # deterministic checks, no AI calls, free
+uv run python -m evals.run_evals --live          # also runs the real model (uses your API quota)
+uv run python -m evals.run_evals --live --mlflow # and logs the run to MLflow
+```
+
+Results go to `evals/results/` (`REPORT.md`, `report.html`, `latest.json`). The offline tests never call a paid provider.
+
+---
+
+## API
+
+All paths are served by `combined_app:app`. Errors carry a `detail.code` (for example `provider_quota_exhausted`).
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Status, active provider, database |
+| `POST` | `/api/meetings/process` | Full task pipeline (used by the extension and website) |
+| `POST` | `/api/v1/extract-factual` | Pass 1 only |
+| `POST` | `/api/v1/infer-context/{id}` | Pass 2 and graph analysis for a saved meeting |
+| `GET` | `/api/meetings`, `/api/meetings/{id}` | List meetings, get one with its tasks and graph |
+| `PATCH` | `/api/meetings/{id}` | Rename or edit participants |
+| `DELETE` | `/api/meetings/{id}` | Delete a meeting and its minutes |
+| `PATCH` | `/api/meetings/{id}/tasks/{task_id}/status` | Change a task's status |
+| `PATCH` | `/api/meetings/{id}/dependencies` | Add or remove dependency links |
+| `POST` | `/api/meetings/{id}/query` | Ask a question about the meeting |
+| `POST` | `/api/meetings/transcribe` | Audio to transcript (local only) |
+| `POST` | `/api/v1/minutes/generate/{id}` | Generate minutes for a saved meeting |
+| `GET`, `PUT` | `/api/v1/minutes/{id}` | Latest revision; save an edited draft |
+| `POST` | `/api/v1/minutes/{id}/approve`, `/regenerate` | Approve; generate a new revision |
+| `GET` | `/api/v1/minutes/{id}/history` | Revision history |
+| `GET` | `/api/v1/minutes/{id}/export/pdf`, `/docx`, `/xlsx` | Export (approved revision unless `draft=true`) |
+| `GET` | `/api/v1/minutes/health`, `/monitoring/stats` | Minutes configuration, usage and cost |
 
 ---
 
 ## Deployment
 
-Two interchangeable backends; the website picks one through `VITE_API_BASE_URL`. Full runbook, Cloudflare DNS records and GCP notes: [DEPLOYMENT.md](DEPLOYMENT.md).
+Two Vercel projects: `vizura-backend` (API) and `vizura-frontend` (website). Domains are Cloudflare CNAME records set to **DNS only**. Full runbook: [DEPLOYMENT.md](DEPLOYMENT.md).
 
-| | Vercel (default) | GCP Cloud Run (optional) |
-|---|---|---|
-| Audio transcription | No | Yes |
-| Idle cost | none | none (scales to zero) |
-| Deploy | `./deploy.sh backend` | `./gcp.sh deploy` |
+- **Automatic:** a push to `main` runs `.github/workflows/deploy.yml`: tests, a staged build, a smoke test, then promotion to production. It needs the GitHub secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_BACKEND_PROJECT_ID` and `VERCEL_FRONTEND_PROJECT_ID`. Pull requests run `ci.yml`.
+- **Manual:** `./deploy.sh` (both), `./deploy.sh backend` or `./deploy.sh frontend`. It deploys the current working tree, does not commit or push, and only promotes a build that passes its checks.
+- **Environment variables:** set them in the backend project (Production), from the `task-backend` folder: `vercel env add NAME production --value VALUE --force --yes`. Mark keys, passwords and `MONGODB_URL` as sensitive. Changes apply only to the next deployment, so redeploy after changing them. The website needs only `VITE_API_BASE_URL=https://capstone-api.shivsharan.me`.
+- **Requirements:** Vercel installs `task-backend/requirements.txt`, so anything the backend imports must be listed there.
 
-```bash
-./deploy.sh              # deploy backend then frontend to Vercel production from the CURRENT working tree
-./deploy.sh frontend     # or: backend. Add --skip-checks to skip local tests/builds
-BACKEND_URL=<url> ./deploy.sh frontend   # point the website at a different backend
-./gcp.sh setup           # first-time GCP deploy (needs `gcloud auth login`, a billing-enabled project and Docker)
-```
+### Vercel limits to know
 
-- Neither script commits or pushes to git. Each deploys a staged build, smoke-tests it and only then promotes it, so a failed check never changes the live site. Roll back with `npx vercel rollback <deployment url>`.
-- **Auto-deploy:** pushing to `main` deploys whatever changed through GitHub Actions (`.github/workflows/deploy.yml`), using the same staged build, smoke test and promote steps. Pull requests run `ci.yml`. One-time secret setup is in [DEPLOYMENT.md](DEPLOYMENT.md#auto-deploy-pipeline-github-actions).
-- Vercel installs `task-backend/requirements.txt` (not `pyproject.toml`), so anything the deployed backend imports must be listed there.
-- Domains: `capstone-app.shivsharan.me` (frontend) and `capstone-api.shivsharan.me` (backend) are CNAME records in Cloudflare set to **DNS only** (grey cloud). A proxied (orange) record breaks Vercel's certificate issuance and returns Cloudflare error 525.
-- The backend's CORS accepts `FRONTEND_ORIGINS`, any `https://*.shivsharan.me`, and Chrome extensions.
+- A request is stopped after 300 seconds, so minutes for a very long meeting can time out; the website retries and recovers a half-saved meeting.
+- Function logs are kept for a short time only; MLflow tracing keeps the run history.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `provider_quota_exhausted` / 429 | The provider's daily or per-minute quota is used up. Wait, or switch provider. On Groq, keep `MINUTES_TOKENS_PER_MINUTE=8000` |
+| `finish_reason: "length"` in logs | The answer hit the output limit. Raise `MINUTES_MAX_OUTPUT_TOKENS` (Gemini allows 32768) |
+| `request_exceeds_context_budget` | The transcript is larger than `MINUTES_CONTEXT_TOKENS`; raise it if the provider allows |
+| "Failed to fetch" in the extension | Wrong backend address in Settings, the local backend is not running, or the extension needs a reload |
+| `/health` shows the wrong provider | Check `LLM_PROVIDER`, then redeploy: Vercel variables apply only to new deployments |
+| Backend does not start | MongoDB Atlas unreachable: check `MONGODB_URL` and Atlas Network Access |

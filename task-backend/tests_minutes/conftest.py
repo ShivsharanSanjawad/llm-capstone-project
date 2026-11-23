@@ -8,6 +8,8 @@ os.environ["MONGODB_URL"] = ""
 # Same for experiment tracking: .env now holds the real MLflow/DagsHub settings, and tests must never upload anything.
 os.environ["MLFLOW_TRACKING_URI"] = ""
 os.environ["MLFLOW_DISABLED"] = "true"
+# Tests check the code's default thinking level, whatever .env sets for real runs.
+os.environ["GEMINI_REASONING_EFFORT"] = ""
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from types import SimpleNamespace
 from unittest.mock import AsyncMock

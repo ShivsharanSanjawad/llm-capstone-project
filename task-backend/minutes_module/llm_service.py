@@ -80,6 +80,12 @@ def _compact_schema(node):
     return node
 
 
+def _gemini_effort() -> str:
+    """Gemini thinking level from GEMINI_REASONING_EFFORT; unset or unrecognised means low."""
+    value = (os.getenv("GEMINI_REASONING_EFFORT") or "low").strip().lower()
+    return value if value in {"low", "medium", "high"} else "low"
+
+
 def _local_thinking() -> bool:
     """LOCAL_LLM_THINKING=on lets a local reasoning model (Qwen3) think before answering, within a word budget."""
     return (os.getenv("LOCAL_LLM_THINKING") or "off").strip().lower() in {"1", "true", "yes", "on"}
@@ -244,9 +250,9 @@ class LLMService:
                 kwargs["reasoning_effort"] = record.get("reasoning_effort", "low")
                 kwargs["extra_body"] = {"reasoning_format": "hidden"}
             if self.provider == "gemini":
-                # Gemini 3 "thinks" before answering, which made every call 20-80 seconds. Low effort keeps the quality for
-                # extraction and classification at a fraction of the time and output tokens.
-                kwargs["reasoning_effort"] = record.get("reasoning_effort", "low")
+                # How much Gemini 3 "thinks" before answering: GEMINI_REASONING_EFFORT=low|medium|high (default low).
+                # More thinking finds more implied dependencies but is slower and uses more output tokens (billed as output).
+                kwargs["reasoning_effort"] = record.get("reasoning_effort", _gemini_effort())
             if self.provider == LOCAL_PROVIDER and _local_thinking():
                 pass        # a strict schema forces JSON from the first character, which leaves no room to think first
             elif self.provider == LOCAL_PROVIDER:
