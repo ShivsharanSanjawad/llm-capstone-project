@@ -614,6 +614,19 @@ function renderAnalysisResults(result) {
   const graph = analysis.graph_analysis || {};
   const isFeasible = graph.is_feasible !== false;
   const bottlenecks = graph.bottlenecks || [];
+  // Separate cycles, not links: both links of a two-task cycle count once.
+  const countCycles = (edges) => {
+    const parent = new Map();
+    const find = (x) => { while (parent.get(x) !== x) x = parent.get(x); return x; };
+    for (const e of edges) {
+      const a = e.from_task_id || "", b = e.to_task_id || "";
+      if (!a || !b) continue;
+      if (!parent.has(a)) parent.set(a, a);
+      if (!parent.has(b)) parent.set(b, b);
+      parent.set(find(a), find(b));
+    }
+    return new Set([...parent.keys()].map(find)).size;
+  };
   const circular = graph.circular_dependencies || [];
   const cycleDetails = graph.cycle_details || [];
   const initialCycles = graph.initial_circular_dependencies || [];
@@ -626,7 +639,7 @@ function renderAnalysisResults(result) {
     gHtml += `<div class="cycle-history">
       <div class="cycle-history-header">
         <strong>Initial circular dependencies detected</strong>
-        <span class="badge badge-blocked">${initialCycles.length}</span>
+        <span class="badge badge-blocked">${countCycles(initialCycles)}</span>
       </div>
       <ul class="cycle-list">
         ${initialCycles.map((cycle) => `

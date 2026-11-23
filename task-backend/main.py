@@ -549,9 +549,36 @@ def merge_split_analysis(tasks: List[Dict[str, Any]], core, links) -> Contextual
                                resolved_dependencies=links.resolved_dependencies)
 
 
+def add_reported_cycle_edges(result: ContextualInference) -> ContextualInference:
+    """Keep the graph consistent with the cycles the model reported.
+
+    A model sometimes lists both directions of a cycle in initial_circular_dependencies but writes only one of them into the
+    tasks' prerequisites, so the graph never sees the cycle. Each reported edge between two listed tasks is added to the
+    dependent task's prerequisites, unless the meeting resolved that cycle (both tasks named in one resolved_dependencies entry).
+    Manual dependency edits are applied after this, so a link a person removed stays removed.
+    """
+    by_id = {str(t.task_id): t for t in result.enriched_tasks}
+    resolved = [set(re.findall(r"\b[A-Za-z]*\d+\b", json.dumps(entry))) & set(by_id) for entry in result.resolved_dependencies]
+    for edge in result.initial_circular_dependencies:
+        pre, dep = str(edge.get("from_task_id") or ""), str(edge.get("to_task_id") or "")
+        if pre not in by_id or dep not in by_id or pre == dep or any({pre, dep} <= ids for ids in resolved):
+            continue
+        task = by_id[dep]
+        if pre not in task.explicit_prerequisites and pre not in task.inferred_prerequisites:
+            task.explicit_prerequisites.append(pre)
+            if edge.get("description"):
+                task.dependency_evidence.append({"prerequisite_task_id": pre, "task_id": dep, "evidence": str(edge["description"])})
+    return result
+
+
 async def run_contextual_inference(transcript_text: str, factual_tasks: List[Dict[str, Any]],
                                    meeting_date: Optional[str] = None) -> ContextualInference:
     """Owners, deadlines, priority and dependencies for the extracted tasks."""
+    return add_reported_cycle_edges(await _run_contextual_inference(transcript_text, factual_tasks, meeting_date))
+
+
+async def _run_contextual_inference(transcript_text: str, factual_tasks: List[Dict[str, Any]],
+                                    meeting_date: Optional[str] = None) -> ContextualInference:
     if not split_analysis_enabled():
         return await run_contextual_inference_single(transcript_text, factual_tasks, meeting_date)
     from models import CoreInference, DependencyInference
@@ -841,8 +868,10 @@ def with_exact_deadlines(doc: Dict[str, Any]) -> Dict[str, Any]:
         rows = doc.get(key)
         if isinstance(rows, list):
             apply_deadlines([r for r in rows if isinstance(r, dict)], day)
+    # The score is plain arithmetic on the deadline and the links, so it is recomputed too: a deadline corrected above
+    # (or a scoring fix) then shows up in the score of meetings saved earlier.
     enriched = doc.get("enriched_tasks")
-    if isinstance(enriched, list) and any(isinstance(r, dict) and "priority_score" not in r for r in enriched):
+    if isinstance(enriched, list) and enriched:
         apply_priority([r for r in enriched if isinstance(r, dict)], day)
     return doc
 

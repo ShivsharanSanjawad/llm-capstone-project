@@ -142,3 +142,17 @@ def test_ambiguous_wording_keeps_the_other_reading():
 def test_calendar_hint_lists_weekdays_from_the_meeting_day():
     hint = calendar_hint(SAT, 3)
     assert hint == "Sun 2026-11-22; Mon 2026-11-23; Tue 2026-11-24"
+
+
+def test_a_stated_date_beats_a_model_that_moved_it_to_another_month():
+    # Real failure: meeting on 23 Nov 2026, "January 3" came back from the model as 2026-12-03.
+    from datetime import date
+    from deadlines import apply_deadlines
+    day = date(2026, 11, 23)
+    rows = apply_deadlines([{"task_id": "T19", "explicit_deadline": "January 3", "deadline_date": "2026-12-03"},
+                            {"task_id": "T2", "explicit_deadline": "December 2", "deadline_date": "2026-12-02"},
+                            {"task_id": "T3", "explicit_deadline": "February 15, 2027", "deadline_date": "2027-02-14"}], day)
+    assert rows[0]["deadline_date"] == "2027-01-03" and rows[0]["deadline_method"] == "calendar rule"
+    assert "deadline_note" not in rows[0]                       # a stated date is not ambiguous
+    assert rows[1]["deadline_date"] == "2026-12-02" and rows[1]["deadline_method"].startswith("model, confirmed")
+    assert rows[2]["deadline_date"] == "2027-02-15"

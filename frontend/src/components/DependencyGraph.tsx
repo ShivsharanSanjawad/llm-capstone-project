@@ -14,6 +14,24 @@ import '@xyflow/react/dist/style.css';
 import type { Graph, Task } from '../types';
 import { Empty } from './ui';
 import { api, errorMessage } from '../services/api';
+
+/** Number of separate cycles in a list of cycle links (both links of a two-task cycle count once). */
+export function countCycles(edges: { from_task_id?: string; to_task_id?: string }[]): number {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    while (parent.get(x) !== x) x = parent.get(x)!;
+    return x;
+  };
+  for (const e of edges) {
+    const a = e.from_task_id || '', b = e.to_task_id || '';
+    if (!a || !b) continue;
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    parent.set(find(a), find(b));
+  }
+  return new Set([...parent.keys()].map(find)).size;
+}
+
 export default function DependencyGraph({
   graph,
   tasks,
@@ -308,7 +326,7 @@ export default function DependencyGraph({
                 fontWeight: 600,
               }}
             >
-              {graph.initial_circular_dependencies.length}
+              {countCycles(graph.initial_circular_dependencies)}
             </span>
           </div>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: '0.8rem' }}>

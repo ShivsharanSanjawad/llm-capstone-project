@@ -201,12 +201,15 @@ def apply_deadlines(tasks: List[Dict[str, Any]], reference: date) -> List[Dict[s
         source = task.get("deadline") or task.get("explicit_deadline")
         proposed = _model_date(task.get("deadline_date"), str(source or ""), reference)
         candidates, arithmetic = analyze(source, reference)
+        # A date said outright ("January 3", "15 Feb 2027") has one answer; the code reads it exactly, so it wins over a
+        # model that disagrees (a model once turned "January 3" into 3 December).
+        stated = _absolute(str(source).casefold(), reference) if source else None
         chosen, method = None, ""
         if proposed and not candidates:
             chosen, method = proposed, "model"
         elif proposed and proposed in candidates:
             chosen, method = proposed, "model, confirmed by calendar rule"
-        elif proposed and not arithmetic:
+        elif proposed and not arithmetic and not stated:
             chosen, method = proposed, "model"
         elif candidates:
             chosen, method = candidates[0], "calendar rule"

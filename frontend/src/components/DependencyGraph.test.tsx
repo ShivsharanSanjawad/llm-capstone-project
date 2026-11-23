@@ -84,3 +84,15 @@ describe('dependency editing', () => {
     expect(save).not.toHaveBeenCalled();
   });
 });
+
+describe('countCycles', () => {
+  it('counts cycles, not links', async () => {
+    const { countCycles } = await import('./DependencyGraph');
+    const pair = (a: string, b: string) => [{ from_task_id: a, to_task_id: b }, { from_task_id: b, to_task_id: a }];
+    // the real case: six two-task cycles reported as twelve links
+    const edges = ['1', '6', '17', '19', '22', '26'].flatMap((n) => pair('T' + n, 'T' + (Number(n) + 1)));
+    expect(edges).toHaveLength(12);
+    expect(countCycles(edges)).toBe(6);
+    expect(countCycles([])).toBe(0);
+  });
+});
