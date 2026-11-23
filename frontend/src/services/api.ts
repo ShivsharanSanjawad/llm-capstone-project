@@ -67,6 +67,8 @@ const messages: Record<string, string> = {
   revision_conflict:
     'Someone changed these minutes. Reload before saving your edits.',
   task_revision_conflict: 'Task statuses changed. Refresh and try again.',
+  provider_quota_exhausted:
+    'The AI provider says its usage quota is used up (a free tier resets daily). Try again later, or switch the provider.',
   generation_timeout:
     'Generation reached its time limit. Check saved results before retrying.',
   provider_transient_failure:
@@ -204,6 +206,44 @@ const post = async <T>(path: string, body?: unknown) => {
   );
 };
 const id = encodeURIComponent;
+// Writing minutes for a long meeting can take minutes (many model calls, provider rate limits). The browser or an
+// intermediate proxy may drop the connection while the server keeps working and saves the result. So when the connection
+// drops, check for the saved minutes instead of reporting a failure. This never re-sends the request (no duplicate work).
+export const recovery = { pollMs: 6000, maxWaitMs: 10 * 60 * 1000 };
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// A dropped connection has no answer from our server. A 502/503/504 that carries one of our error codes IS an answer
+// (for example the provider quota is used up), so it is a real failure, not something to wait out.
+const connectionDropped = (e: unknown) =>
+  e instanceof ApiError &&
+  (e.status === 0 || e.status === 408 || ([502, 503, 504].includes(e.status) && !e.detail?.code));
+async function generationWithRecovery(
+  meetingId: string,
+  start: () => Promise<Revision>
+): Promise<Revision> {
+  let before = 0;
+  try {
+    before = (await api.minutes(meetingId)).revision;
+  } catch {
+    /* none yet */
+  }
+  try {
+    return await start();
+  } catch (e) {
+    if (!connectionDropped(e)) throw e;
+    const deadline = Date.now() + recovery.maxWaitMs;
+    while (Date.now() < deadline) {
+      await sleep(recovery.pollMs);
+      try {
+        const latest = await api.minutes(meetingId);
+        if (latest.revision > before) return latest;
+      } catch (poll) {
+        const waiting = poll instanceof ApiError && (poll.status === 404 || connectionDropped(poll));
+        if (!waiting) throw poll;
+      }
+    }
+    throw e;
+  }
+}
 export const api = {
   transcribe: async (file: File) => {
     await ensureWarm();
@@ -307,9 +347,13 @@ export const api = {
   history: (meetingId: string) =>
     request<Revision[]>(minutes + '/' + id(meetingId) + '/history'),
   generate: (meetingId: string) =>
-    post<Revision>(minutes + '/generate/' + id(meetingId)),
+    generationWithRecovery(meetingId, () =>
+      post<Revision>(minutes + '/generate/' + id(meetingId))
+    ),
   regenerate: (meetingId: string) =>
-    post<Revision>(minutes + '/' + id(meetingId) + '/regenerate'),
+    generationWithRecovery(meetingId, () =>
+      post<Revision>(minutes + '/' + id(meetingId) + '/regenerate')
+    ),
   edit: (
     meetingId: string,
     revision: number,

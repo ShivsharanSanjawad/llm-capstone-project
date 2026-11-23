@@ -56,7 +56,7 @@ class Runtime:
             return await self._generate(request, tasks, expected, source_segments, force=force)
         from .prompt_templates import SYSTEM, MAP, REDUCE, PROMPT_VERSION
         from .verifier import REVIEW_SYSTEM
-        signature = {key:getattr(self.settings,key) for key in ("temperature","max_output_tokens","context_tokens","output_token_ceiling","chunk_tokens","enable_verification","length_retries")}
+        signature = {key:getattr(self.settings,key) for key in ("temperature","max_output_tokens","context_tokens","output_token_ceiling","chunk_tokens","enable_verification","enable_semantic_review","length_retries")}
         key = generation_key([meeting_id, [s.model_dump() for s in segments], request.meeting.model_dump(), tasks or {},
             self.llm.provider,self.llm.model,signature,PROMPT_VERSION,SYSTEM,MAP,REDUCE,REVIEW_SYSTEM])
         history = await self.store.history(meeting_id)

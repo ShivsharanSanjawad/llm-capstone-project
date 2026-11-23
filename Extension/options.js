@@ -23,11 +23,27 @@ document.getElementById("grantMic").addEventListener("click", async () => {
   }
 });
 
+// The hosts the extension is allowed to call (see host_permissions in manifest.json).
+function isAllowedEndpoint(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname;
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      if (["localhost", "127.0.0.1", "0.0.0.0"].includes(host)) return true;
+    }
+    return url.protocol === "https:" && (
+      host === "shivsharan.me" || host.endsWith(".shivsharan.me") ||
+      host.endsWith(".run.app") || host === "vizura-backend.vercel.app");
+  } catch (_) {
+    return false;
+  }
+}
+
 document.getElementById("save").addEventListener("click", async () => {
   const value = endpoint.value.trim() || fallbackEndpoint;
-  if (value && !/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(?:\/|$)/.test(value)) {
+  if (!isAllowedEndpoint(value)) {
     status.className = "error";
-    status.textContent = "Please use a valid localhost or 127.0.0.1 backend endpoint.";
+    status.textContent = "Use http://localhost or 127.0.0.1 (local backend), or an https address on shivsharan.me, run.app or vizura-backend.vercel.app. Any other host must also be added to host_permissions in manifest.json.";
     return;
   }
   await chrome.storage.local.set({ processingEndpoint: value });
@@ -52,6 +68,6 @@ document.getElementById("test").addEventListener("click", async () => {
     status.textContent = `✓ Backend online! Provider: ${data.llm_provider || 'Active'} • Database: ${data.database_mode}`;
   } catch (err) {
     status.className = "error";
-    status.textContent = `Connection failed: ${err.message}. Make sure the backend is running at http://127.0.0.1:8000.`;
+    status.textContent = `Connection failed: ${err.message}. Check the address, and for a local backend make sure it is running.`;
   }
 });

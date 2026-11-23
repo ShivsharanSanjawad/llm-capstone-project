@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import os
 import hashlib
 import logging
@@ -22,6 +23,9 @@ class LLMError(Exception):
         self.code, self.status = code, status
         self.diagnostics = diagnostics or {}
         super().__init__(code)
+
+LOCAL_PROVIDER = "local"
+LOCAL_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"      # LM Studio's OpenAI-compatible server
 
 PROVIDERS = {
     "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-3.5-flash-lite"),
@@ -76,6 +80,20 @@ def _compact_schema(node):
     return node
 
 
+def _local_thinking() -> bool:
+    """LOCAL_LLM_THINKING=on lets a local reasoning model (Qwen3) think before answering, within a word budget."""
+    return (os.getenv("LOCAL_LLM_THINKING") or "off").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove a model's <think>...</think> reasoning and return just the JSON object that follows it."""
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
+    if "<think>" in text:                         # reasoning never closed: it ran out of budget before the answer
+        return ""
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1] if 0 <= start < end else text.strip()
+
+
 class LLMService:
     def __init__(self, settings, client=None):
         self.settings = settings
@@ -83,7 +101,7 @@ class LLMService:
         self._cache = OrderedDict()
         self._json_mode_supported = True
         self.provider = settings.provider or next((p for p, v in PROVIDERS.items() if os.getenv(v[0])), "")
-        if self.provider and self.provider not in PROVIDERS:
+        if self.provider and self.provider not in PROVIDERS and self.provider != LOCAL_PROVIDER:
             raise ValueError("Unsupported minutes provider")
         key, base, default = PROVIDERS.get(self.provider, ("", None, ""))
         self.model = settings.model or os.getenv("LLM_MODEL") or default
@@ -91,7 +109,18 @@ class LLMService:
         self.base_url = (base or "").rstrip("/")
         self._sdk_compat = client is not None
         self.client = client
-        if client is None and self.configured:
+        if self.provider == LOCAL_PROVIDER:
+            # A model served on this machine (LM Studio). Chosen only explicitly (LLM_PROVIDER=local); never auto-detected.
+            self.base_url = (os.getenv("LOCAL_LLM_BASE_URL") or LOCAL_DEFAULT_BASE_URL).rstrip("/")
+            self.model = settings.model or os.getenv("LOCAL_LLM_MODEL") or "local-model"
+            self.configured = True
+            if client is None:
+                # Local models are slow: allow minutes per call. LM Studio ignores the token unless API tokens are switched on.
+                self.client = httpx.AsyncClient(
+                    timeout=max(settings.timeout_seconds, 900),
+                    headers={"Authorization": f"Bearer {os.getenv('LOCAL_LLM_API_KEY') or 'lm-studio'}"},
+                )
+        elif client is None and self.configured:
             self.client = httpx.AsyncClient(
                 timeout=settings.timeout_seconds,
                 headers={"Authorization": f"Bearer {os.environ[key]}"},
@@ -111,7 +140,7 @@ class LLMService:
 
     def signature(self):
         return {"provider": self.provider, "model": self.model, "prompt_version": PROMPT_VERSION,
-            **{key:getattr(self.settings, key) for key in ("temperature", "max_output_tokens", "output_token_ceiling", "context_tokens", "chunk_tokens", "enable_verification", "length_retries")}}
+            **{key:getattr(self.settings, key) for key in ("temperature", "max_output_tokens", "output_token_ceiling", "context_tokens", "chunk_tokens", "enable_verification", "enable_semantic_review", "length_retries")}}
 
     async def generate(self, instruction, payload, record, schema=Minutes, system=SYSTEM):
         key = generation_key([self.signature(), schema.model_json_schema(), system, instruction, payload])
@@ -183,6 +212,11 @@ class LLMService:
     async def _generate(self, instruction, payload, record, schema=Minutes, system=SYSTEM):
         if not self.client:
             raise LLMError("provider_not_configured", 503)
+        if self.provider == LOCAL_PROVIDER and _local_thinking():
+            words = (os.getenv("LOCAL_LLM_THINKING_WORDS") or "300").strip()
+            system = system + f"\n/think\nThink briefly: use at most about {words} words of reasoning, then give only the final JSON answer."
+        elif self.provider == LOCAL_PROVIDER and "qwen3" in self.model.lower() and (os.getenv("LOCAL_LLM_NO_THINK") or "true").strip().lower() not in {"0", "false", "no", "off"}:
+            system = system + "\n/no_think"        # Qwen3's switch for skipping its long hidden reasoning
         messages = [{"role":"system", "content":system+"\nJSON schema: "+json.dumps(_compact_schema(schema.model_json_schema()))},
                     {"role":"user", "content":instruction+"\n"+json.dumps(payload, ensure_ascii=False)}]
         if estimate(json.dumps(messages, ensure_ascii=False)) + self.settings.max_output_tokens > self.settings.context_tokens:
@@ -210,7 +244,14 @@ class LLMService:
                 # Gemini 3 "thinks" before answering, which made every call 20-80 seconds. Low effort keeps the quality for
                 # extraction and classification at a fraction of the time and output tokens.
                 kwargs["reasoning_effort"] = record.get("reasoning_effort", "low")
-            if mode:
+            if self.provider == LOCAL_PROVIDER and _local_thinking():
+                pass        # a strict schema forces JSON from the first character, which leaves no room to think first
+            elif self.provider == LOCAL_PROVIDER:
+                # LM Studio can force the answer to match the schema (grammar-constrained decoding), which matters a lot for
+                # small models. It does not accept the json_object mode the other providers use.
+                kwargs["response_format"] = {"type": "json_schema", "json_schema": {
+                    "name": schema.__name__, "strict": True, "schema": _compact_schema(schema.model_json_schema())}}
+            elif mode:
                 kwargs["response_format"] = {"type":"json_object"}
             try:
                 scheduler, _ = self.loop_state()
@@ -242,6 +283,8 @@ class LLMService:
                     "attempt":record["calls"], "finish_reason":choice.finish_reason, "estimated_input_tokens":input_estimate, "output_limit":output_limit,
                     "reported_input_tokens":usage.prompt_tokens if usage else None, "reported_output_tokens":usage.completion_tokens if usage else None}))
                 content = choice.message.content or ""
+                if self.provider == LOCAL_PROVIDER and _local_thinking():
+                    content = _strip_thinking(content)
                 record["estimated_output_tokens"] += estimate(content)
                 if choice.finish_reason == "length" and not getattr(choice.message, "refusal", None):
                     # Restart the same request with a bounded larger budget. Never append

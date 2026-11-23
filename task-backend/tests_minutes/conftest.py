@@ -44,3 +44,9 @@ def fake_database(monkeypatch):
     monkeypatch.setattr(database, "connect", AsyncMock())
     monkeypatch.setattr(database, "close", lambda: None)
     yield db
+
+
+@pytest.fixture(autouse=True)
+def single_call_analysis_by_default(monkeypatch):
+    """Existing tests exercise the one-call analysis; the split analysis is tested explicitly in test_split_analysis.py."""
+    monkeypatch.setenv("SPLIT_ANALYSIS", "off")

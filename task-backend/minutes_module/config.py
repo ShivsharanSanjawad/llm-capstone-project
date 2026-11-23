@@ -19,7 +19,8 @@ class Settings(BaseModel):
     retry_jitter: float = Field(default=.25, ge=0, le=1)
     timeout_seconds: float = Field(default=90, gt=0)
     max_retries: int = Field(default=3, ge=0, le=8)
-    enable_verification: bool = True
+    enable_verification: bool = True          # free check: every claim must quote text that really is in the transcript
+    enable_semantic_review: bool = False      # extra AI review calls (many calls and tokens): off by default; MINUTES_ENABLE_SEMANTIC_REVIEW=true
     storage_mode: str = Field(default="mongodb", pattern="^(auto|mongodb)$")
     context_tokens: int = Field(default=32000, ge=4000)
     max_input_chars: int = Field(default=1000000, ge=100)

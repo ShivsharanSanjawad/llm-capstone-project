@@ -75,7 +75,8 @@ class Summarizer:
     async def complete(self, result, meeting, segments, retained, record):
         result, report = self.finish(result, meeting, segments, retained)
         if self.settings.enable_verification:
-            await review_claims(self.llm, result, segments, record, self.settings)
+            if self.settings.enable_semantic_review:
+                await review_claims(self.llm, result, segments, record, self.settings)
             report = verify(result, segments)
             for path in record.get("review_deferred_paths", []):
                 report["flags"].append({"path":path,"reason":"semantic_review_exceeds_budget_requires_human_review"})

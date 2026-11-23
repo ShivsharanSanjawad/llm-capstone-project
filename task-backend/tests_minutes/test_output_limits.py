@@ -297,13 +297,29 @@ def test_oversized_semantic_review_is_explicitly_flagged_not_falsely_passed():
             if kwargs.get("schema") is not None:
                 raise LLMError("request_exceeds_token_rate_budget",422)
             return await super().generate(instruction,payload,record,**kwargs)
-    settings=Settings(enable_verification=True)
+    settings=Settings(enable_verification=True,enable_semantic_review=True)
     source=normalize(GenerateRequest(transcript_text="Release was discussed."),10000)
     record=Monitor().begin("m","mock","model")
     result,report=asyncio.run(Summarizer(settings,BudgetedReview()).generate(GenerateRequest().meeting,source,record))
     assert result.executive_summary.text=="Release was discussed."
     assert report["requires_human_review"]
     assert any(flag["reason"]=="semantic_review_exceeds_budget_requires_human_review" for flag in report["flags"])
+
+
+def test_semantic_review_is_off_by_default_but_source_check_still_runs():
+    from test_minutes import FakeLLM
+    reviews=[]
+    class Counting(FakeLLM):
+        async def generate(self,instruction,payload,record,**kwargs):
+            if kwargs.get("schema") is not None and kwargs["schema"].__name__=="ReviewResult":
+                reviews.append(1)
+            return await super().generate(instruction,payload,record,**kwargs)
+    assert Settings().enable_semantic_review is False
+    source=normalize(GenerateRequest(transcript_text="Release was discussed."),10000)
+    record=Monitor().begin("m","mock","model")
+    _,report=asyncio.run(Summarizer(Settings(enable_verification=True),Counting()).generate(GenerateRequest().meeting,source,record))
+    assert reviews==[]                       # no extra AI review calls
+    assert report["method"].startswith("deterministic references")   # the free source check still ran
 
 
 

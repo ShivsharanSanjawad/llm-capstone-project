@@ -734,7 +734,7 @@ async function warmBackend(anyApiUrl) {
   }
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, { longRunning = false } = {}) {
   await warmBackend(url); // covers every step: extract-factual, infer-context, ...
   const options = { method: "POST" };
   if (body !== undefined) {
@@ -743,16 +743,33 @@ async function postJson(url, body) {
   }
   // Retry transient failures (cold start, gateway errors, provider hiccups). Every step here is safe to repeat:
   // extract-factual saves only after it succeeds and infer-context just recomputes the same meeting.
+  // A long-running step (the analysis can take minutes on a rate-limited plan) is sent exactly once: re-sending a dropped
+  // request would start a second copy of the same work. The caller waits for the saved result instead.
+  const attempts = longRunning ? 1 : 3;
   let response;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       response = await fetch(url, options);
     } catch (error) {
+      if (longRunning) {
+        const dropped = new Error("The connection dropped while the server was still working.");
+        dropped.dropped = true;
+        throw dropped;
+      }
       if (attempt === 3) throw error;
       await new Promise((r) => setTimeout(r, 1500 * attempt));
       continue;
     }
-    if ([429, 502, 503, 504].includes(response.status) && attempt < 3) {
+    if (longRunning && [502, 503, 504].includes(response.status)) {
+      // A gateway timeout has no JSON answer from our server; an error with a code (quota, authentication, ...) is a real failure.
+      const body = await response.clone().json().catch(() => null);
+      if (!(body && body.detail && body.detail.code)) {
+        const dropped = new Error(`HTTP ${response.status}`);
+        dropped.dropped = true;
+        throw dropped;
+      }
+    }
+    if ([429, 502, 503, 504].includes(response.status) && attempt < attempts) {
       await new Promise((r) => setTimeout(r, 1500 * attempt));
       continue;
     }
@@ -770,6 +787,36 @@ async function postJson(url, body) {
     throw new Error(detail);
   }
   return response.json();
+}
+
+// Run the analysis, and if the connection drops while the server is still working, wait for the saved result.
+async function inferWithRecovery(endpoint, baseUrl, meetingId, onWaiting) {
+  const meetingUrl = new URL(baseUrl);
+  meetingUrl.pathname = `${meetingUrl.pathname.replace(/\/$/, "")}/api/meetings/${encodeURIComponent(meetingId)}`;
+  const readMeeting = async () => {
+    try {
+      const response = await fetch(meetingUrl);
+      return response.ok ? await response.json() : null;
+    } catch (_) {
+      return null;
+    }
+  };
+  const before = await readMeeting();
+  try {
+    return await postJson(endpoint, undefined, { longRunning: true });
+  } catch (err) {
+    if (!err.dropped) throw err;
+    const deadline = Date.now() + 8 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (onWaiting) onWaiting();
+      await new Promise((r) => setTimeout(r, 6000));
+      const doc = await readMeeting();
+      const fresh = doc && doc.status === "completed" && Array.isArray(doc.enriched_tasks) &&
+        (!before || doc.updated_at !== before.updated_at || !Array.isArray(before.enriched_tasks));
+      if (fresh) return { status: "success", data: { tasks: doc.enriched_tasks, graph_analysis: doc.graph_analysis } };
+    }
+    throw new Error("The analysis is taking longer than expected. It may still finish: reopen this meeting on the website in a minute, or press Analyze more again.");
+  }
 }
 
 async function extractFacts() {
@@ -830,7 +877,9 @@ analyzeMoreButton.addEventListener("click", async () => {
     const baseUrl = await getApiBaseUrl();
     const endpoint = new URL(baseUrl);
     endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/api/v1/infer-context/${encodeURIComponent(state.meetingId)}`;
-    const result = await postJson(endpoint);
+    const result = await inferWithRecovery(endpoint, baseUrl, state.meetingId, () => {
+      analysisStatus.textContent = "Still analysing: the server is working. This can take a few minutes on a rate-limited plan…";
+    });
     if (!result.data || !Array.isArray(result.data.tasks)) {
       throw new Error("The backend returned an unexpected analysis response.");
     }

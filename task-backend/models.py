@@ -104,3 +104,36 @@ class ContextualInference(BaseModel):
         default_factory=list,
         description="Agreements or execution steps that resolved the original circular dependencies. Each item should explain the resolution and affected task IDs."
     )
+
+
+# ---- The same analysis, split into two smaller answers (see main.run_contextual_inference) ----
+class TaskCore(BaseModel):
+    task_id: str = Field(description="Must exactly match the task_id from the list.")
+    owner: Optional[str] = Field(description="The explicitly stated or logically inferred owner. Null if entirely unknown.")
+    missing_owner: bool = Field(description="True if the owner was not stated and cannot be inferred confidently.")
+    deadline: Optional[str] = Field(description="The deadline in the speaker's own words, explicit or logically inferred.")
+    deadline_date: Optional[str] = Field(
+        default=None,
+        description="The exact calendar date (YYYY-MM-DD) the deadline refers to, from meeting_date and the supplied calendar. Null when none can be determined.")
+    missing_deadline: bool = Field(description="True if no deadline was stated or implied.")
+    priority: Literal["Low", "Medium", "High"] = Field(description="Your own priority label from urgency words and context.")
+    llm_importance: Optional[int] = Field(default=None, ge=0, le=10, description="Importance and urgency from the discussion alone, 0 to 10.")
+    priority_reason: Optional[str] = Field(default=None, description="One short sentence justifying llm_importance.")
+    status: Literal["pending", "in progress", "completed", "blocked"] = Field(default="pending", description="Inferred current status.")
+
+
+class CoreInference(BaseModel):
+    tasks: List[TaskCore]
+
+
+class TaskLinks(BaseModel):
+    task_id: str = Field(description="The dependent task: the one that has to wait. Must exactly match a task_id from the list.")
+    explicit_prerequisites: TextList = Field(default_factory=list, description="task_ids, or short descriptions of outside blockers, that were explicitly stated as needed first.")
+    inferred_prerequisites: TextList = Field(default_factory=list, description="task_ids, or outside blockers, that logically must happen first though not stated.")
+    dependency_evidence: List[TextDict] = Field(default_factory=list, description="One record per dependency between tracked tasks: prerequisite_task_id, task_id (the dependent task) and evidence (the exact transcript words).")
+
+
+class DependencyInference(BaseModel):
+    tasks: List[TaskLinks]
+    initial_circular_dependencies: List[TextDict] = Field(default_factory=list, description="Each edge of every cycle in the original conversation: from_task_id (prerequisite), to_task_id (dependent), description (exact transcript words).")
+    resolved_dependencies: List[TextDict] = Field(default_factory=list, description="Agreements that resolved an original cycle, with the affected task ids.")

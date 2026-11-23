@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { api, ApiError } from './api';
+import { api, ApiError, recovery } from './api';
 afterEach(() => vi.unstubAllGlobals());
 describe('typed API integration', () => {
   it('submits a real processing payload to the existing endpoint', async () => {
@@ -184,4 +184,74 @@ it('shows an actionable audio error without starting meeting processing', async 
   await expect(api.transcribe(new File([''], 'silent.wav'))).rejects.toThrow(
     'No speech was detected.'
   );
+});
+
+describe('long minutes generation', () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const route = (handlers: Array<(url: string, init?: RequestInit) => Response | Promise<Response>>) => {
+    const calls: string[] = [];
+    let i = 0;
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push((init?.method || 'GET') + ' ' + url.replace(/^.*\/api\/v1\/minutes/, ''));
+      return handlers[Math.min(i++, handlers.length - 1)](url, init);
+    });
+    vi.stubGlobal('fetch', fetch);
+    return calls;
+  };
+
+  it('waits for the saved minutes when the connection drops, without re-sending the request', async () => {
+    recovery.pollMs = 1;
+    const calls = route([
+      () => json({ detail: { code: 'minutes_not_found' } }, 404),       // nothing saved yet
+      () => { throw new TypeError('Failed to fetch'); },                // the long request is dropped
+      () => json({ detail: { code: 'minutes_not_found' } }, 404),       // still working
+      () => json({ meeting_id: 'm1', revision: 1 }),                    // saved
+    ]);
+    const result = await api.generate('m1');
+    expect(result.revision).toBe(1);
+    expect(calls.filter((c) => c.startsWith('POST'))).toHaveLength(1);
+  });
+
+  it('does not treat a normal server error as a dropped connection', async () => {
+    recovery.pollMs = 1;
+    route([
+      () => json({ detail: { code: 'minutes_not_found' } }, 404),
+      () => json({ detail: { code: 'invalid_transcript_or_configuration' } }, 422),
+    ]);
+    await expect(api.generate('m1')).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('regenerate returns only a revision newer than the one it started from', async () => {
+    recovery.pollMs = 1;
+    route([
+      () => json({ meeting_id: 'm1', revision: 3 }),                    // existing minutes
+      () => { throw new TypeError('Failed to fetch'); },
+      () => json({ meeting_id: 'm1', revision: 3 }),                    // not new yet
+      () => json({ meeting_id: 'm1', revision: 4 }),                    // the regenerated one
+    ]);
+    expect((await api.regenerate('m1')).revision).toBe(4);
+  });
+
+  it('shows a real provider error at once instead of waiting for minutes that will never come', async () => {
+    recovery.pollMs = 1;
+    const calls = route([
+      () => json({ detail: { code: 'minutes_not_found' } }, 404),
+      () => json({ detail: { code: 'provider_authentication' } }, 502),         // our server answered: a real failure
+    ]);
+    await expect(api.generate('m1')).rejects.toMatchObject({ status: 502 });
+    expect(calls).toHaveLength(2);                                              // no polling happened
+  });
+
+  it('gives up after the wait limit and shows the original error', async () => {
+    recovery.pollMs = 1;
+    recovery.maxWaitMs = 30;
+    route([
+      () => json({ detail: { code: 'minutes_not_found' } }, 404),
+      () => { throw new TypeError('Failed to fetch'); },
+      () => json({ detail: { code: 'minutes_not_found' } }, 404),
+    ]);
+    await expect(api.generate('m1')).rejects.toBeInstanceOf(ApiError);
+    recovery.maxWaitMs = 10 * 60 * 1000;
+  });
 });
