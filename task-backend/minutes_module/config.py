@@ -7,7 +7,7 @@ class Settings(BaseModel):
     provider: str = ""
     model: str = ""
     temperature: float = Field(default=.1, ge=0, le=2)
-    max_output_tokens: int = Field(default=4096, ge=128)
+    max_output_tokens: int = Field(default=16384, ge=128)    # start high: avoids "length" cut-offs and their retries
     output_token_ceiling: int = Field(default=16384, ge=128)
     length_retries: int = Field(default=2, ge=0, le=4)
     chunk_tokens: int = Field(default=2000, ge=500)

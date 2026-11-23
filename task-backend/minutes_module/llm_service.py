@@ -219,10 +219,13 @@ class LLMService:
             system = system + "\n/no_think"        # Qwen3's switch for skipping its long hidden reasoning
         messages = [{"role":"system", "content":system+"\nJSON schema: "+json.dumps(_compact_schema(schema.model_json_schema()))},
                     {"role":"user", "content":instruction+"\n"+json.dumps(payload, ensure_ascii=False)}]
-        if estimate(json.dumps(messages, ensure_ascii=False)) + self.settings.max_output_tokens > self.settings.context_tokens:
-            raise LLMError("request_exceeds_context_budget", 422)
         input_estimate = estimate(json.dumps(messages, ensure_ascii=False))
-        output_limit = min(self.settings.max_output_tokens, self.settings.tokens_per_minute-input_estimate)
+        # The output limit starts high (16k by default) so a long answer is not cut off and retried. It is capped by the room
+        # left in the context window and in the per-minute budget; a request is refused only when almost no room is left.
+        if input_estimate + min(self.settings.max_output_tokens, 1024) > self.settings.context_tokens:
+            raise LLMError("request_exceeds_context_budget", 422)
+        output_limit = min(self.settings.max_output_tokens, self.settings.tokens_per_minute-input_estimate,
+                           self.settings.context_tokens-input_estimate)
         if schema.__name__ == "ReviewResult":
             output_limit = min(output_limit, max(256, len(payload.get("claims", []))*48+128))
         if output_limit < 128:

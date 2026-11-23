@@ -11,7 +11,8 @@ class Summarizer:
 
     async def generate(self, meeting, segments, record):
         overhead = estimate(SYSTEM + json.dumps(Minutes.model_json_schema())) + 1000
-        budget = self.settings.context_tokens - self.settings.max_output_tokens - overhead
+        # Room kept for the answer: the output limit, but never more than half the context (the limit starts high, 16k).
+        budget = self.settings.context_tokens - min(self.settings.max_output_tokens, self.settings.context_tokens//2) - overhead
         if budget < 1000:
             raise LLMError("context_budget_too_small", 422)
         batches = chunks(segments, min(budget, self.settings.chunk_tokens, max(500, self.settings.max_output_tokens//2)))
